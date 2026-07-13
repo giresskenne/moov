@@ -23,6 +23,148 @@
   </head>
 
   <body>
+    <!-- ===================== ONBOARDING: first-run flow ===================== -->
+    <div id="onboarding-screen" class="screen">
+      <div class="ob-aurora"></div>
+      <div id="ob-confetti" class="ob-confetti"></div>
+
+      <div class="ob-shell">
+        <!-- Progress dots (built in JS) -->
+        <div id="ob-dots" class="ob-dots"></div>
+
+        <!-- STEP 0 — Welcome -->
+        <section class="ob-step" data-step="welcome">
+          <div class="ob-logo">
+            <span class="ob-logo-glyph">🧘</span>
+          </div>
+          <h1 class="ob-title">Meet Moov</h1>
+          <p class="ob-lede">
+            Your back has been waiting all day. Let's build a habit that actually
+            sticks — <strong>one real stretch at a time.</strong>
+          </p>
+          <div class="ob-actions">
+            <button class="ob-btn primary" data-ob-next>Let's go →</button>
+            <button class="ob-btn ghost" data-ob-skip>Skip intro</button>
+          </div>
+        </section>
+
+        <!-- STEP 1 — How it works -->
+        <section class="ob-step" data-step="how">
+          <h2 class="ob-title sm">Here's the deal</h2>
+          <div class="ob-cards">
+            <div class="ob-card" style="--i: 0">
+              <div class="ob-card-icon">⏰</div>
+              <h3>Every 30 minutes</h3>
+              <p>Moov takes over your screen so you can't "just finish this one thing."</p>
+            </div>
+            <div class="ob-card" style="--i: 1">
+              <div class="ob-card-icon">🧍</div>
+              <h3>Stand &amp; stretch</h3>
+              <p>Pick a back stretch and hold the pose. It only takes 10 seconds.</p>
+            </div>
+            <div class="ob-card" style="--i: 2">
+              <div class="ob-card-icon">📷</div>
+              <h3>Your camera checks</h3>
+              <p>On-device AI confirms you actually did it — no faking your way back to work.</p>
+            </div>
+          </div>
+          <div class="ob-actions">
+            <button class="ob-btn ghost" data-ob-back>Back</button>
+            <button class="ob-btn primary" data-ob-next>Makes sense →</button>
+          </div>
+        </section>
+
+        <!-- STEP 2 — Camera access -->
+        <section id="ob-step-camera" class="ob-step" data-step="camera">
+          <h2 class="ob-title sm">Turn on your camera</h2>
+          <div class="ob-cam-frame">
+            <video id="ob-cam-preview" autoplay playsinline muted></video>
+            <div class="ob-cam-placeholder">
+              <span>📷</span>
+            </div>
+            <div class="ob-cam-check">✓</div>
+          </div>
+          <p id="ob-cam-state" class="ob-cam-state">
+            Moov uses your camera only to check your form. It runs 100% on your
+            device and is never uploaded or recorded.
+          </p>
+          <div class="ob-actions">
+            <button class="ob-btn ghost" data-ob-back>Back</button>
+            <button id="ob-enable-cam" class="ob-btn primary">Enable camera</button>
+            <button class="ob-btn primary" data-ob-next>Continue →</button>
+          </div>
+        </section>
+
+        <!-- STEP 3 — Choose your go-to stretch -->
+        <section class="ob-step" data-step="stretch">
+          <h2 class="ob-title sm">Pick your go-to stretch</h2>
+          <p class="ob-lede sm">We'll make this your default — you can always switch mid-break.</p>
+          <div id="ob-stretch-cards" class="stretch-chooser">
+            <button class="stretch-card" data-stretch="overhead">
+              <img
+                src="https://cdn.jefit.com/assets/img/exercises/gifs/793.gif"
+                alt="Overhead Decompression"
+              />
+              <span class="stretch-name">Overhead Decompression</span>
+            </button>
+            <button class="stretch-card" data-stretch="lumbar">
+              <img
+                src="https://media.post.rvohealth.io/wp-content/uploads/2020/11/Standing-extension.gif"
+                alt="Lumbar Extension"
+              />
+              <span class="stretch-name">Lumbar Extension</span>
+            </button>
+          </div>
+          <div class="ob-actions">
+            <button class="ob-btn ghost" data-ob-back>Back</button>
+            <button class="ob-btn primary" data-ob-next>Try it live →</button>
+          </div>
+        </section>
+
+        <!-- STEP 4 — Live calibration -->
+        <section class="ob-step" data-step="calibrate">
+          <h2 class="ob-title sm">Let's do a quick rep</h2>
+          <p class="ob-lede sm">
+            Get in frame and do your <strong id="ob-cal-stretch-name">stretch</strong>.
+            Watch the ring fill!
+          </p>
+          <div class="ob-cal-stage">
+            <div class="ob-cam-frame big">
+              <video id="ob-cal-video" autoplay playsinline muted></video>
+              <canvas id="ob-cal-overlay"></canvas>
+            </div>
+            <div class="ob-cal-ring-wrap">
+              <svg viewBox="0 0 130 130" class="ob-cal-ring">
+                <circle class="ob-cal-ring-bg" cx="65" cy="65" r="54" />
+                <circle id="ob-cal-ring-fill" class="ob-cal-ring-fill" cx="65" cy="65" r="54" />
+              </svg>
+              <div class="ob-cal-check">✓</div>
+            </div>
+          </div>
+          <p id="ob-cal-hint" class="pose-hint">Warming up…</p>
+          <div class="ob-actions">
+            <button class="ob-btn ghost" data-ob-back>Back</button>
+            <button class="ob-btn ghost" data-ob-next>Skip this</button>
+          </div>
+        </section>
+
+        <!-- STEP 5 — Done -->
+        <section class="ob-step" data-step="done">
+          <div class="ob-logo big">
+            <span class="ob-logo-glyph">🎉</span>
+          </div>
+          <h1 class="ob-title">You're all set!</h1>
+          <p class="ob-lede">
+            Moov is now watching the clock. Your first break is on its way —
+            your back is already grateful.
+          </p>
+          <div class="ob-actions">
+            <button class="ob-btn primary lg" data-ob-skip>Start protecting my back</button>
+          </div>
+        </section>
+      </div>
+    </div>
+
     <!-- ===================== IDLE: waiting for next break ===================== -->
     <div id="idle-screen" class="screen active">
       <div class="idle-container">
@@ -46,6 +188,7 @@
         <h1 class="app-title">Moov</h1>
         <p class="app-subtitle">Your back will thank you ✨</p>
         <button id="btn-test-lock" class="btn-subtle">Test stretch now</button>
+        <button id="btn-replay-onboarding" class="btn-link">Replay intro</button>
       </div>
     </div>
 

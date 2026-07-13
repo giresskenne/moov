@@ -61,6 +61,13 @@ const SUCCESS_HOLD_MS = 2200; // how long "Great job" stays before releasing
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 100; // r=100 in the SVG
 
+// ---------- Onboarding ----------
+const CAL_HOLD_MS = 3000; // valid-pose hold to pass the live calibration
+const CAL_RING_CIRC = 2 * Math.PI * 54; // r=54 in the calibration SVG
+const OB_STEPS = ["welcome", "how", "camera", "stretch", "calibrate", "done"];
+const LS_ONBOARDED = "moov.onboarded";
+const LS_DEFAULT_STRETCH = "moov.defaultStretch";
+
 const STRETCHES = {
   overhead: {
     gif: "https://cdn.jefit.com/assets/img/exercises/gifs/793.gif",
@@ -90,6 +97,16 @@ const state = {
   timerIntervalSecs: 1800,
   countdownRemaining: 1800,
   countdownInterval: null,
+
+  // onboarding
+  onboarding: false,
+  obStep: 0,
+  obDefault: "overhead", // preferred stretch chosen during onboarding
+  obCameraOk: false,
+  obCalLoop: null,
+  obHeldMs: 0,
+  obLastTick: 0,
+  obDone: false,
 };
 
 // ---------- DOM ----------
@@ -126,6 +143,22 @@ async function init() {
     pip: $("pip"),
     webcam: $("webcam"),
     overlay: $("overlay"),
+
+    // onboarding
+    onboarding: $("onboarding-screen"),
+    obDots: $("ob-dots"),
+    obCamPreview: $("ob-cam-preview"),
+    obCamState: $("ob-cam-state"),
+    obBtnEnableCam: $("ob-enable-cam"),
+    obCamStep: $("ob-step-camera"),
+    obStretchCards: $("ob-stretch-cards"),
+    obCalVideo: $("ob-cal-video"),
+    obCalOverlay: $("ob-cal-overlay"),
+    obCalRing: $("ob-cal-ring-fill"),
+    obCalHint: $("ob-cal-hint"),
+    obCalStretchName: $("ob-cal-stretch-name"),
+    obConfetti: $("ob-confetti"),
+    btnReplayOnboarding: $("btn-replay-onboarding"),
   };
 
   // Ring starts empty.
@@ -145,7 +178,12 @@ async function init() {
 
   // The Rust backend emits these when the break timer fires / is released.
   await listenTauri("screen-locked", () => {
-    dlog("event: screen-locked (isLocked=%s)", state.isLocked);
+    dlog("event: screen-locked (isLocked=%s, onboarding=%s)", state.isLocked, state.onboarding);
+    // Don't hijack the first-run onboarding — push the break out and keep going.
+    if (state.onboarding) {
+      invokeTauri("snooze_break", { secs: 120 }).catch(() => {});
+      return;
+    }
     if (!state.isLocked) startFlow();
   });
   await listenTauri("screen-unlocked", () => {
@@ -164,12 +202,27 @@ async function init() {
     }
   });
 
-  dlog("init complete");
-
-  // Stretch selection (step 2).
+  // Stretch selection (break-flow step 2).
   el.chooser.querySelectorAll(".stretch-card").forEach((card) => {
     card.addEventListener("click", () => chooseStretch(card.dataset.stretch, card));
   });
+
+  // Remember the user's preferred stretch across sessions.
+  try {
+    const saved = localStorage.getItem(LS_DEFAULT_STRETCH);
+    if (saved && STRETCHES[saved]) state.obDefault = saved;
+  } catch {
+    /* ignore */
+  }
+
+  wireOnboarding();
+
+  // First run? Roll out the red carpet. Otherwise land on the idle screen.
+  if (shouldOnboard()) {
+    startOnboarding();
+  }
+
+  dlog("init complete", { willOnboard: shouldOnboard() });
 }
 
 // ============================================================
@@ -216,7 +269,11 @@ function startFlow() {
   el.lockScreen.classList.add("active");
   el.pip.classList.remove("visible");
   el.greenFlash.classList.remove("flash");
-  el.chooser.querySelectorAll(".stretch-card").forEach((c) => c.classList.remove("selected"));
+  el.chooser.querySelectorAll(".stretch-card").forEach((c) => {
+    c.classList.remove("selected");
+    // Badge the user's onboarding pick as their go-to.
+    c.classList.toggle("is-default", c.dataset.stretch === state.obDefault);
+  });
   el.promptTitle.textContent = "Pick your stretch";
   el.promptSub.textContent = "Choose one to get started";
   el.ringFill.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
@@ -435,29 +492,44 @@ function resetToIdle() {
 // ============================================================
 // WEBCAM
 // ============================================================
+// One shared MediaStream can feed multiple <video> elements (the break-flow
+// PiP and the onboarding calibration view), so acquisition is factored out.
+async function acquireCamera() {
+  if (state.stream) return state.stream;
+  dlog("acquireCamera: requesting getUserMedia…");
+  state.stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+    audio: false,
+  });
+  dlog("acquireCamera: stream acquired", state.stream.getVideoTracks().map((t) => t.label));
+  return state.stream;
+}
+
+// Attach the shared stream to a <video>, sizing its companion <canvas> (if any)
+// to the true frame dimensions so keypoint overlays line up.
+async function attachStream(video, canvas) {
+  video.srcObject = state.stream;
+  await video.play().catch(() => {});
+  const size = () => {
+    if (canvas) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+    dlog("video ready", { id: video.id, w: video.videoWidth, h: video.videoHeight });
+  };
+  if (video.readyState >= 1 && video.videoWidth) size();
+  else video.addEventListener("loadedmetadata", size, { once: true });
+}
+
 async function startWebcam() {
   if (state.stream) {
     dlog("startWebcam: already running");
+    await attachStream(el.webcam, el.overlay);
     return;
   }
   try {
-    dlog("startWebcam: requesting getUserMedia…");
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
-      audio: false,
-    });
-    el.webcam.srcObject = state.stream;
-    await el.webcam.play();
-    el.webcam.addEventListener(
-      "loadedmetadata",
-      () => {
-        el.overlay.width = el.webcam.videoWidth;
-        el.overlay.height = el.webcam.videoHeight;
-        dlog("webcam ready", { w: el.webcam.videoWidth, h: el.webcam.videoHeight });
-      },
-      { once: true }
-    );
-    dlog("startWebcam: stream acquired", state.stream.getVideoTracks().map((t) => t.label));
+    await acquireCamera();
+    await attachStream(el.webcam, el.overlay);
   } catch (err) {
     console.error("Webcam access failed:", err);
     dwarn("startWebcam failed", err);
@@ -472,8 +544,12 @@ function stopWebcam() {
     state.stream = null;
   }
   el.webcam.srcObject = null;
-  const ctx = el.overlay.getContext("2d");
-  if (ctx) ctx.clearRect(0, 0, el.overlay.width, el.overlay.height);
+  clearCanvas(el.overlay);
+}
+
+function clearCanvas(canvas) {
+  const ctx = canvas?.getContext("2d");
+  if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 // ============================================================
@@ -518,11 +594,11 @@ async function loadDetector() {
 }
 
 // Returns a name->keypoint map (only keypoints above the score gate), or null.
-async function estimatePose() {
+async function estimatePoseFrom(video) {
   if (!state.detector || !state.stream) return null;
-  if (el.webcam.readyState < 2 || el.webcam.videoWidth === 0) return null;
+  if (video.readyState < 2 || video.videoWidth === 0) return null;
   try {
-    const result = await state.detector.estimatePoses(el.webcam, { flipHorizontal: false });
+    const result = await state.detector.estimatePoses(video, { flipHorizontal: false });
     if (!result || result.length === 0) return null;
     const map = {};
     for (const kp of result[0].keypoints) {
@@ -534,6 +610,8 @@ async function estimatePose() {
     return null;
   }
 }
+
+const estimatePose = () => estimatePoseFrom(el.webcam);
 
 // ---------- Pose heuristics ----------
 // NOTE: image coordinates put y=0 at the TOP, so "higher" means a SMALLER y.
@@ -601,13 +679,15 @@ const SKELETON_BONES = [
   ["left_hip", "right_hip"],
 ];
 
-function drawSkeleton(kp) {
-  const ctx = el.overlay.getContext("2d");
+function drawSkeletonOn(canvas, kp, color = "#64d2ff") {
+  const ctx = canvas?.getContext("2d");
   if (!ctx) return;
-  ctx.clearRect(0, 0, el.overlay.width, el.overlay.height);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  ctx.strokeStyle = "rgba(100, 210, 255, 0.8)";
-  ctx.lineWidth = 3;
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.85;
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
   for (const [a, b] of SKELETON_BONES) {
     const pa = kp[a];
     const pb = kp[b];
@@ -618,12 +698,299 @@ function drawSkeleton(kp) {
     ctx.stroke();
   }
 
-  ctx.fillStyle = "#64d2ff";
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = color;
   for (const name in kp) {
     const p = kp[name];
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
     ctx.fill();
+  }
+}
+
+const drawSkeleton = (kp) => drawSkeletonOn(el.overlay, kp);
+
+// ============================================================
+// ONBOARDING — the coolest first run ever
+//
+//   welcome → how it works → camera access → pick your go-to stretch →
+//   LIVE calibration (raise your arms, watch the skeleton + ring) → confetti.
+//
+// The calibration step is the wow moment: it proves the on-device pose
+// detection actually works on *you* before your first real break.
+// ============================================================
+function shouldOnboard() {
+  try {
+    return localStorage.getItem(LS_ONBOARDED) !== "1";
+  } catch {
+    return true;
+  }
+}
+
+function wireOnboarding() {
+  if (!el.onboarding) return;
+
+  // Build the progress dots.
+  el.obDots.innerHTML = "";
+  OB_STEPS.forEach((_, i) => {
+    const dot = document.createElement("span");
+    dot.className = "ob-dot";
+    dot.dataset.index = String(i);
+    el.obDots.appendChild(dot);
+  });
+
+  // Next / back / skip buttons (data-driven).
+  el.onboarding.querySelectorAll("[data-ob-next]").forEach((b) =>
+    b.addEventListener("click", () => obGoto(state.obStep + 1))
+  );
+  el.onboarding.querySelectorAll("[data-ob-back]").forEach((b) =>
+    b.addEventListener("click", () => obGoto(state.obStep - 1))
+  );
+  el.onboarding.querySelectorAll("[data-ob-skip]").forEach((b) =>
+    b.addEventListener("click", finishOnboarding)
+  );
+
+  // Camera permission.
+  el.obBtnEnableCam.addEventListener("click", obEnableCamera);
+
+  // Choose default stretch.
+  el.obStretchCards.querySelectorAll(".stretch-card").forEach((card) => {
+    card.addEventListener("click", () => obChooseDefault(card.dataset.stretch));
+  });
+
+  // Replay from the idle screen.
+  if (el.btnReplayOnboarding) {
+    el.btnReplayOnboarding.addEventListener("click", () => {
+      try {
+        localStorage.removeItem(LS_ONBOARDED);
+      } catch {
+        /* ignore */
+      }
+      startOnboarding();
+    });
+  }
+}
+
+function startOnboarding() {
+  dlog("startOnboarding");
+  state.onboarding = true;
+  state.obDone = false;
+  el.idleScreen.classList.remove("active");
+  el.lockScreen.classList.remove("active");
+  el.onboarding.classList.add("active");
+  // Warm up MoveNet in the background so calibration is instant.
+  loadDetector();
+  obGoto(0);
+}
+
+function obGoto(index) {
+  const clamped = Math.max(0, Math.min(OB_STEPS.length - 1, index));
+
+  // Leaving the calibration step: stop the loop + camera preview.
+  if (OB_STEPS[state.obStep] === "calibrate" && OB_STEPS[clamped] !== "calibrate") {
+    stopCalibration();
+  }
+
+  state.obStep = clamped;
+  const name = OB_STEPS[clamped];
+  dlog("ob step →", name);
+
+  el.onboarding
+    .querySelectorAll(".ob-step")
+    .forEach((s) => s.classList.toggle("active", s.dataset.step === name));
+
+  // Progress dots.
+  el.obDots.querySelectorAll(".ob-dot").forEach((d, i) => {
+    d.classList.toggle("done", i < clamped);
+    d.classList.toggle("current", i === clamped);
+  });
+
+  // Per-step enter hooks.
+  if (name === "camera") obReflectCameraState();
+  if (name === "stretch") obReflectStretchChoice();
+  if (name === "calibrate") startCalibration();
+  if (name === "done") finishOnboardingSoon();
+}
+
+// ---------- Camera permission step ----------
+async function obEnableCamera() {
+  el.obBtnEnableCam.disabled = true;
+  el.obCamState.textContent = "Requesting camera…";
+  el.obCamState.className = "ob-cam-state";
+  try {
+    await acquireCamera();
+    await attachStream(el.obCamPreview, null);
+    state.obCameraOk = true;
+    dlog("onboarding camera enabled");
+  } catch (err) {
+    state.obCameraOk = false;
+    dwarn("onboarding camera denied", err);
+  }
+  el.obBtnEnableCam.disabled = false;
+  obReflectCameraState();
+}
+
+function obReflectCameraState() {
+  const camStep = el.obCamStep;
+  if (state.obCameraOk) {
+    camStep.classList.add("cam-ok");
+    el.obCamState.textContent = "Camera connected — that's you! Nothing leaves this device.";
+    el.obCamState.className = "ob-cam-state ok";
+    el.obBtnEnableCam.classList.add("hidden");
+  } else {
+    camStep.classList.remove("cam-ok");
+    el.obCamState.textContent =
+      "Camera is off. Moov needs it to check your form — but you can continue without it.";
+    el.obCamState.className = "ob-cam-state";
+    el.obBtnEnableCam.classList.remove("hidden");
+  }
+}
+
+// ---------- Choose default stretch ----------
+function obChooseDefault(key) {
+  if (!STRETCHES[key]) return;
+  state.obDefault = key;
+  try {
+    localStorage.setItem(LS_DEFAULT_STRETCH, key);
+  } catch {
+    /* ignore */
+  }
+  dlog("onboarding default stretch:", key);
+  obReflectStretchChoice();
+}
+
+function obReflectStretchChoice() {
+  el.obStretchCards.querySelectorAll(".stretch-card").forEach((c) => {
+    c.classList.toggle("selected", c.dataset.stretch === state.obDefault);
+  });
+}
+
+// ---------- LIVE calibration (the wow moment) ----------
+function startCalibration() {
+  const s = STRETCHES[state.obDefault];
+  el.obCalStretchName.textContent = s.name;
+  state.obHeldMs = 0;
+  state.obLastTick = now();
+  el.obCalRing.style.strokeDasharray = String(CAL_RING_CIRC);
+  el.obCalRing.style.strokeDashoffset = String(CAL_RING_CIRC);
+  el.onboarding.querySelector('[data-step="calibrate"]').classList.remove("cal-done");
+
+  // No camera or no model? Turn calibration into a friendly "you're all set".
+  if (!state.stream || state.detectorStatus === "failed") {
+    dwarn("calibration unavailable → auto-pass", {
+      stream: !!state.stream,
+      detector: state.detectorStatus,
+    });
+    el.obCalHint.textContent = state.stream
+      ? "Skipping the live check — we'll verify during real breaks."
+      : "No camera — we'll just time your holds during breaks.";
+    setTimeout(calibrationPassed, 900);
+    return;
+  }
+
+  attachStream(el.obCalVideo, el.obCalOverlay);
+  el.obCalHint.textContent = "Warming up…";
+  clearInterval(state.obCalLoop);
+  state.obCalLoop = setInterval(calibrationTick, DETECT_INTERVAL_MS);
+}
+
+async function calibrationTick() {
+  if (!state.onboarding) return;
+  const t = now();
+  const dt = t - state.obLastTick;
+  state.obLastTick = t;
+
+  if (state.detectorStatus === "loading") {
+    el.obCalHint.textContent = "Warming up the pose detector…";
+    return;
+  }
+  if (state.detectorStatus === "failed") {
+    stopCalibration();
+    el.obCalHint.textContent = "Pose check unavailable — you're all set.";
+    setTimeout(calibrationPassed, 600);
+    return;
+  }
+
+  const kp = await estimatePoseFrom(el.obCalVideo);
+  const s = STRETCHES[state.obDefault];
+  const valid = kp ? s.check(kp) : false;
+  if (kp) drawSkeletonOn(el.obCalOverlay, kp, valid ? "#30d158" : "#64d2ff");
+
+  if (valid) {
+    state.obHeldMs = Math.min(CAL_HOLD_MS, state.obHeldMs + Math.min(dt, DETECT_INTERVAL_MS * 3));
+    el.obCalHint.textContent = "Perfect — hold it! ✓";
+    el.obCalHint.className = "pose-hint ok";
+  } else {
+    state.obHeldMs = Math.max(0, state.obHeldMs - dt * 0.5);
+    el.obCalHint.textContent = kp ? s.cue : "Step back so the camera sees you";
+    el.obCalHint.className = "pose-hint warn";
+  }
+
+  const frac = state.obHeldMs / CAL_HOLD_MS;
+  el.obCalRing.style.strokeDashoffset = String(CAL_RING_CIRC * (1 - frac));
+
+  if (state.obHeldMs >= CAL_HOLD_MS) {
+    stopCalibration();
+    calibrationPassed();
+  }
+}
+
+function calibrationPassed() {
+  dlog("calibration passed");
+  el.obCalHint.textContent = "Nailed it! 🎯";
+  el.obCalHint.className = "pose-hint ok";
+  el.onboarding.querySelector('[data-step="calibrate"]').classList.add("cal-done");
+  burstConfetti(el.obConfetti, 24);
+  setTimeout(() => {
+    if (OB_STEPS[state.obStep] === "calibrate") obGoto(state.obStep + 1);
+  }, 1400);
+}
+
+function stopCalibration() {
+  clearInterval(state.obCalLoop);
+  state.obCalLoop = null;
+  clearCanvas(el.obCalOverlay);
+  el.obCalVideo.srcObject = null;
+}
+
+// ---------- Finish ----------
+function finishOnboardingSoon() {
+  burstConfetti(el.obConfetti, 60);
+}
+
+function finishOnboarding() {
+  if (state.obDone) return;
+  state.obDone = true;
+  dlog("finishOnboarding");
+  try {
+    localStorage.setItem(LS_ONBOARDED, "1");
+  } catch {
+    /* ignore */
+  }
+  stopCalibration();
+  // Release the shared camera; the real break flow re-acquires on demand.
+  stopWebcam();
+  state.onboarding = false;
+  el.onboarding.classList.remove("active");
+  el.idleScreen.classList.add("active");
+  startIdleCountdown();
+}
+
+// ---------- Confetti ----------
+function burstConfetti(container, count) {
+  if (!container) return;
+  const colors = ["#64d2ff", "#5e5ce6", "#bf5af2", "#30d158", "#ffd60a", "#ff6b6b"];
+  for (let i = 0; i < count; i++) {
+    const bit = document.createElement("span");
+    bit.className = "confetti-bit";
+    bit.style.left = `${Math.random() * 100}%`;
+    bit.style.background = colors[Math.floor(Math.random() * colors.length)];
+    bit.style.setProperty("--dx", `${(Math.random() - 0.5) * 240}px`);
+    bit.style.setProperty("--rot", `${Math.random() * 720 - 360}deg`);
+    bit.style.animationDelay = `${Math.random() * 0.25}s`;
+    bit.style.animationDuration = `${1.4 + Math.random() * 0.9}s`;
+    container.appendChild(bit);
+    setTimeout(() => bit.remove(), 2600);
   }
 }
 

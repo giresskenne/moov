@@ -407,3 +407,397 @@ body {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
   z-index: 2;
 }
+
+/* A quiet text link (idle screen "Replay intro"). */
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  padding: 4px;
+}
+.btn-link:hover {
+  color: var(--fg);
+}
+
+/* ============================================================
+   ONBOARDING
+   ============================================================ */
+#onboarding-screen {
+  overflow: hidden;
+  background: #06070c;
+}
+
+/* Slow-drifting aurora backdrop */
+.ob-aurora {
+  position: absolute;
+  inset: -30%;
+  background:
+    radial-gradient(40% 40% at 20% 30%, rgba(94, 92, 230, 0.45), transparent 60%),
+    radial-gradient(45% 45% at 80% 25%, rgba(100, 210, 255, 0.4), transparent 60%),
+    radial-gradient(45% 45% at 55% 80%, rgba(191, 90, 242, 0.4), transparent 60%);
+  filter: blur(40px);
+  animation: aurora 18s ease-in-out infinite alternate;
+  z-index: 0;
+}
+@keyframes aurora {
+  0% {
+    transform: translate3d(-4%, -2%, 0) scale(1);
+  }
+  100% {
+    transform: translate3d(4%, 3%, 0) scale(1.15);
+  }
+}
+
+.ob-shell {
+  position: relative;
+  z-index: 2;
+  width: min(920px, 92vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+}
+
+/* Progress dots */
+.ob-dots {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.ob-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  transition: background 0.3s, transform 0.3s, width 0.3s;
+}
+.ob-dot.done {
+  background: var(--good);
+}
+.ob-dot.current {
+  width: 26px;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+}
+
+/* Steps: one active at a time */
+.ob-step {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  text-align: center;
+}
+.ob-step.active {
+  display: flex;
+  animation: ob-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes ob-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ob-title {
+  font-size: clamp(30px, 5vw, 52px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.ob-title.sm {
+  font-size: clamp(24px, 3.4vw, 36px);
+}
+.ob-lede {
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.55;
+  max-width: 560px;
+}
+.ob-lede.sm {
+  font-size: 15px;
+}
+.ob-lede strong {
+  color: var(--fg);
+}
+
+/* Welcome logo */
+.ob-logo {
+  width: 120px;
+  height: 120px;
+  border-radius: 34px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, rgba(94, 92, 230, 0.35), rgba(100, 210, 255, 0.25));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 20px 60px rgba(94, 92, 230, 0.4);
+  animation: float 4s ease-in-out infinite;
+}
+.ob-logo.big {
+  animation: pop 0.9s ease infinite;
+}
+.ob-logo-glyph {
+  font-size: 60px;
+}
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+/* Buttons */
+.ob-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 8px;
+}
+.ob-btn {
+  font: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  padding: 12px 24px;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: transform 0.15s, box-shadow 0.2s, background 0.2s, opacity 0.2s;
+}
+.ob-btn:hover {
+  transform: translateY(-2px);
+}
+.ob-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+.ob-btn.primary {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  box-shadow: 0 10px 26px rgba(94, 92, 230, 0.45);
+}
+.ob-btn.lg {
+  font-size: 17px;
+  padding: 15px 32px;
+}
+.ob-btn.ghost {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--ring);
+}
+.ob-btn.ghost:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+/* "How it works" cards */
+.ob-cards {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.ob-card {
+  width: 230px;
+  max-width: 40vw;
+  padding: 24px 20px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  animation: ob-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i) * 0.12s + 0.1s);
+}
+.ob-card-icon {
+  font-size: 34px;
+  margin-bottom: 10px;
+}
+.ob-card h3 {
+  font-size: 17px;
+  margin-bottom: 6px;
+}
+.ob-card p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Camera frame (permission + calibration) */
+.ob-cam-frame {
+  position: relative;
+  width: 360px;
+  max-width: 80vw;
+  aspect-ratio: 4 / 3;
+  border-radius: 20px;
+  overflow: hidden;
+  background: #000;
+  border: 2px solid var(--ring);
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+.ob-cam-frame.big {
+  width: 460px;
+}
+.ob-cam-frame video,
+.ob-cam-frame canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* mirror */
+}
+.ob-cam-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 54px;
+  opacity: 0.35;
+}
+.cam-ok .ob-cam-placeholder {
+  display: none;
+}
+.ob-cam-frame .ob-cam-check {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--good);
+  color: #04210d;
+  font-weight: 800;
+  transform: scale(0);
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  z-index: 3;
+}
+.cam-ok .ob-cam-frame .ob-cam-check {
+  transform: scale(1);
+}
+.cam-ok .ob-cam-frame {
+  border-color: var(--good);
+  box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.25), 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.ob-cam-state {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 480px;
+}
+.ob-cam-state.ok {
+  color: var(--good);
+}
+
+/* Live calibration stage */
+.ob-cal-stage {
+  display: flex;
+  gap: 30px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.ob-cal-ring-wrap {
+  position: relative;
+  width: 130px;
+  height: 130px;
+}
+.ob-cal-ring {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.ob-cal-ring-bg {
+  fill: none;
+  stroke: var(--ring);
+  stroke-width: 10;
+}
+.ob-cal-ring-fill {
+  fill: none;
+  stroke: var(--good);
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-dasharray: 339.29; /* 2πr, r=54 */
+  stroke-dashoffset: 339.29;
+  transition: stroke-dashoffset 0.15s linear;
+  filter: drop-shadow(0 0 6px rgba(48, 209, 88, 0.6));
+}
+.ob-cal-check {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 52px;
+  color: var(--good);
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 0.3s, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.cal-done .ob-cal-check {
+  opacity: 1;
+  transform: scale(1);
+}
+.cal-done .ob-cal-ring {
+  animation: pulse-ok 0.6s ease;
+}
+@keyframes pulse-ok {
+  50% {
+    filter: drop-shadow(0 0 18px rgba(48, 209, 88, 0.9));
+  }
+}
+
+/* Confetti */
+.ob-confetti {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+.confetti-bit {
+  position: absolute;
+  top: -14px;
+  width: 10px;
+  height: 14px;
+  border-radius: 2px;
+  opacity: 0.95;
+  animation-name: confetti-fall;
+  animation-timing-function: cubic-bezier(0.3, 0.7, 0.5, 1);
+  animation-fill-mode: forwards;
+}
+@keyframes confetti-fall {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), 105vh) rotate(var(--rot));
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-aurora,
+  .ob-logo,
+  .ob-logo.big,
+  .interrupt-count span,
+  .release-emoji {
+    animation: none;
+  }
+}
