@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Moov — Stretch Blocker</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/styles.css" />
+
+    <!-- TensorFlow.js + MoveNet (pose-detection) loaded as UMD globals:
+         window.tf and window.poseDetection. Classic scripts run before the
+         deferred ES-module below, so main.js can rely on both being present. -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+
+    <script type="module" src="/src/main.js"></script>
+  </head>
+
+  <body>
+    <!-- ===================== IDLE: waiting for next break ===================== -->
+    <div id="idle-screen" class="screen active">
+      <div class="idle-container">
+        <div class="logo-ring">
+          <svg class="timer-ring" viewBox="0 0 200 200">
+            <defs>
+              <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#64D2FF" />
+                <stop offset="50%" stop-color="#5E5CE6" />
+                <stop offset="100%" stop-color="#BF5AF2" />
+              </linearGradient>
+            </defs>
+            <circle class="ring-bg" cx="100" cy="100" r="90" />
+            <circle id="ring-progress" class="ring-fill" cx="100" cy="100" r="90" />
+          </svg>
+          <div class="timer-inner">
+            <span class="timer-label">Next break in</span>
+            <span id="countdown-timer" class="timer-value">30:00</span>
+          </div>
+        </div>
+        <h1 class="app-title">Moov</h1>
+        <p class="app-subtitle">Your back will thank you ✨</p>
+        <button id="btn-test-lock" class="btn-subtle">Test stretch now</button>
+      </div>
+    </div>
+
+    <!-- ===================== LOCK: the 4-step stretch flow ===================== -->
+    <div id="lock-screen" class="screen">
+      <!-- Green success flash (step 4) -->
+      <div id="green-flash" class="green-flash"></div>
+
+      <!-- ---------- STEP 1 — THE INTERRUPTION ---------- -->
+      <section class="phase" data-phase="interruption">
+        <p class="kicker">Moov</p>
+        <h1 class="headline">Time for your back.<br />Stand up and step back.</h1>
+        <div class="interrupt-count">
+          <span id="interrupt-count">5</span>
+        </div>
+      </section>
+
+      <!-- ---------- STEP 2 — THE PROMPT ---------- -->
+      <section class="phase" data-phase="prompt">
+        <h2 id="prompt-title" class="headline sm">Pick your stretch</h2>
+        <p id="prompt-sub" class="subtle">Choose one to get started</p>
+
+        <div id="stretch-chooser" class="stretch-chooser">
+          <button class="stretch-card" data-stretch="overhead">
+            <img
+              src="https://cdn.jefit.com/assets/img/exercises/gifs/793.gif"
+              alt="Overhead Decompression"
+            />
+            <span class="stretch-name">Overhead Decompression</span>
+          </button>
+          <button class="stretch-card" data-stretch="lumbar">
+            <img
+              src="https://media.post.rvohealth.io/wp-content/uploads/2020/11/Standing-extension.gif"
+              alt="Lumbar Extension"
+            />
+            <span class="stretch-name">Lumbar Extension</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ---------- STEP 3 — THE CHALLENGE ---------- -->
+      <section class="phase" data-phase="challenge">
+        <h2 id="challenge-title" class="headline sm">Hold this position for 10 seconds</h2>
+        <div class="challenge-body">
+          <img id="challenge-gif" class="challenge-gif" alt="Target stretch" />
+          <div class="progress-ring-wrap">
+            <svg class="progress-ring" viewBox="0 0 220 220">
+              <circle class="progress-ring-bg" cx="110" cy="110" r="100" />
+              <circle
+                id="progress-ring-fill"
+                class="progress-ring-fill"
+                cx="110"
+                cy="110"
+                r="100"
+              />
+            </svg>
+            <div class="progress-ring-label">
+              <span id="hold-remaining">10</span>
+              <small>seconds</small>
+            </div>
+          </div>
+        </div>
+        <p id="pose-hint" class="pose-hint">Warming up the pose detector…</p>
+      </section>
+
+      <!-- ---------- STEP 4 — THE RELEASE ---------- -->
+      <section class="phase" data-phase="release">
+        <div class="release-emoji">🎉</div>
+        <h1 class="headline">Great job, back to work!</h1>
+      </section>
+
+      <!-- Picture-in-picture webcam (fades in from step 2 onward) -->
+      <div id="pip" class="pip">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <span class="pip-label">You</span>
+      </div>
+    </div>
+  </body>
+</html>
