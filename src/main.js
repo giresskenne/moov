@@ -68,18 +68,29 @@ const OB_STEPS = ["welcome", "how", "camera", "stretch", "calibrate", "done"];
 const LS_ONBOARDED = "moov.onboarded";
 const LS_DEFAULT_STRETCH = "moov.defaultStretch";
 
+// Each stretch is scored one of two ways:
+//   mode:"hold" — hold a valid static pose for `holdMs` (e.g. arms overhead).
+//   mode:"reps" — perform a real repeated MOVEMENT; we count reps from the
+//                 rise/fall of a body signal. A static pose earns nothing —
+//                 you have to actually do the motion that relieves the back.
 const STRETCHES = {
   overhead: {
     gif: "https://cdn.jefit.com/assets/img/exercises/gifs/793.gif",
     name: "Overhead Decompression",
+    title: "Reach up and hold for 10 seconds",
     cue: "Reach both arms straight overhead",
+    mode: "hold",
     check: isOverheadPose,
   },
   lumbar: {
     gif: "https://media.post.rvohealth.io/wp-content/uploads/2020/11/Standing-extension.gif",
     name: "Lumbar Extension",
-    cue: "Hands on your lower back, gently lean back",
-    check: isLumbarPose,
+    title: "Do 5 slow back extensions",
+    cue: "Hands on your lower back — gently lean back, then return",
+    mode: "reps",
+    repTarget: 5,
+    gate: lumbarGate, // torso must be in frame
+    signal: lumbarSignal, // vertical torso position we watch oscillate
   },
 };
 
@@ -92,7 +103,7 @@ const state = {
   stream: null,
   interruptTimer: null,
   detectLoop: null,
-  heldMs: 0,
+  evaluator: null, // active StretchEvaluator during the challenge
   lastTick: 0,
   timerIntervalSecs: 1800,
   countdownRemaining: 1800,
@@ -104,7 +115,7 @@ const state = {
   obDefault: "overhead", // preferred stretch chosen during onboarding
   obCameraOk: false,
   obCalLoop: null,
-  obHeldMs: 0,
+  obEval: null, // active StretchEvaluator during onboarding calibration
   obLastTick: 0,
   obDone: false,
 };
@@ -138,6 +149,7 @@ async function init() {
     challengeGif: $("challenge-gif"),
     ringFill: $("progress-ring-fill"),
     holdRemaining: $("hold-remaining"),
+    ringUnit: $("ring-unit"),
     poseHint: $("pose-hint"),
 
     webcam: $("webcam"),
@@ -261,7 +273,7 @@ function startFlow() {
   dlog("startFlow");
   state.isLocked = true;
   state.stretch = null;
-  state.heldMs = 0;
+  state.evaluator = null;
 
   // Reset visuals.
   el.idleScreen.classList.remove("active");
@@ -330,25 +342,28 @@ function chooseStretch(key, card) {
 function stepChallenge() {
   showPhase("challenge");
   const s = STRETCHES[state.stretch];
-  el.challengeTitle.textContent = "Hold this position for 10 seconds";
+  el.challengeTitle.textContent = s.title;
   el.challengeGif.src = s.gif;
 
-  state.heldMs = 0;
+  state.evaluator = makeEvaluator(state.stretch);
   state.lastTick = now();
-  updateRing(0);
+  state.tickCount = 0;
+  applyChallengeUI(state.evaluator.snapshot());
 
-  dlog("stepChallenge", { stretch: state.stretch, detectorStatus: state.detectorStatus });
+  dlog("stepChallenge", {
+    stretch: state.stretch,
+    mode: s.mode,
+    detectorStatus: state.detectorStatus,
+  });
 
   if (state.detectorStatus === "failed") {
     // No model — don't trap the user. Fall back to a plain timed hold.
     dwarn("detector failed → timed fallback");
-    setHint(`${s.cue} (pose check unavailable — just hold)`, "warn");
     startTimedFallback();
     return;
   }
 
   setHint(state.detectorStatus === "ready" ? s.cue : "Warming up the pose detector…");
-  state.tickCount = 0;
   clearInterval(state.detectLoop);
   state.detectLoop = setInterval(detectTick, DETECT_INTERVAL_MS);
 }
@@ -371,33 +386,21 @@ async function detectTick() {
     return;
   }
 
-  const keypoints = await estimatePose();
-  const s = STRETCHES[state.stretch];
-  const valid = keypoints ? s.check(keypoints) : false;
-  if (keypoints) drawSkeleton(keypoints);
+  const kp = await estimatePose();
+  const r = state.evaluator.update(kp, dt);
+  if (kp) drawSkeleton(kp, r.valid ? "#30d158" : "#64d2ff");
+  applyChallengeUI(r);
 
-  if (valid) {
-    // Accumulate valid-hold time (cap dt so a stalled frame can't jump the bar).
-    state.heldMs = Math.min(HOLD_MS, state.heldMs + Math.min(dt, DETECT_INTERVAL_MS * 3));
-    setHint("Holding it — nice! Keep going ✓", "ok");
-  } else {
-    // Dropped the pose: pause the ring and decay slightly so it must be re-earned.
-    state.heldMs = Math.max(0, state.heldMs - dt * 0.5);
-    setHint(s.cue, "warn");
-  }
-
-  // Per-tick trace — the workhorse for troubleshooting pose detection.
+  // Per-tick trace — now includes the MOVEMENT signal the score is based on.
   if (DEBUG) {
     dlog(
-      `tick#${state.tickCount} valid=${valid} held=${Math.round(state.heldMs)}/${HOLD_MS}ms dt=${Math.round(dt)}`,
-      keypoints ? summarizeKeypoints(keypoints) : "no keypoints"
+      `tick#${state.tickCount} valid=${r.valid} progress=${(r.progress * 100).toFixed(0)}% dt=${Math.round(dt)}`,
+      { ...r.debug, kp: kp ? summarizeKeypoints(kp) : "no keypoints" }
     );
   }
 
-  updateRing(state.heldMs / HOLD_MS);
-
-  if (state.heldMs >= HOLD_MS) {
-    dlog("hold complete → release");
+  if (r.done) {
+    dlog("challenge complete → release", r.debug);
     clearInterval(state.detectLoop);
     stepRelease();
   }
@@ -405,40 +408,48 @@ async function detectTick() {
 
 // Compact keypoint snapshot for debug logs (which joints were confident + y's).
 function summarizeKeypoints(kp) {
-  const names = Object.keys(kp);
   const round = (p) => (p ? { x: Math.round(p.x), y: Math.round(p.y), s: +(p.score ?? 0).toFixed(2) } : null);
   return {
-    seen: names,
+    seen: Object.keys(kp),
     left_wrist: round(kp.left_wrist),
     right_wrist: round(kp.right_wrist),
-    eyes_y: avgY(kp.left_eye, kp.right_eye, kp.nose),
-    shoulders_y: avgY(kp.left_shoulder, kp.right_shoulder),
-    hips_y: avgY(kp.left_hip, kp.right_hip),
+    eyes_y: Math.round(avgY(kp.left_eye, kp.right_eye, kp.nose) ?? -1),
+    shoulders_y: Math.round(avgY(kp.left_shoulder, kp.right_shoulder) ?? -1),
+    hips_y: Math.round(avgY(kp.left_hip, kp.right_hip) ?? -1),
     torsoScale: Math.round(torsoScale(kp)),
   };
 }
 
-// Timed fallback when the detector can't load — still requires 10s.
+// Timed fallback when the detector can't load — still requires 10s of standing.
 function startTimedFallback() {
   dlog("startTimedFallback (no pose check)");
+  let held = 0;
   state.lastTick = now();
+  setHint("Pose check unavailable — take your stretch, unlocking on the timer.", "warn");
   clearInterval(state.detectLoop);
   state.detectLoop = setInterval(() => {
     const t = now();
-    state.heldMs = Math.min(HOLD_MS, state.heldMs + (t - state.lastTick));
+    held = Math.min(HOLD_MS, held + (t - state.lastTick));
     state.lastTick = t;
-    updateRing(state.heldMs / HOLD_MS);
-    if (state.heldMs >= HOLD_MS) {
+    applyChallengeUI({
+      progress: held / HOLD_MS,
+      big: String(Math.ceil((HOLD_MS - held) / 1000)),
+      unit: "seconds",
+    });
+    if (held >= HOLD_MS) {
       clearInterval(state.detectLoop);
       stepRelease();
     }
   }, 150);
 }
 
-function updateRing(frac) {
-  const clamped = Math.max(0, Math.min(1, frac));
+// Paint the ring + numbers + hint from an evaluator result.
+function applyChallengeUI(r) {
+  const clamped = Math.max(0, Math.min(1, r.progress));
   el.ringFill.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - clamped));
-  el.holdRemaining.textContent = String(Math.ceil((HOLD_MS - state.heldMs) / 1000));
+  if (r.big != null) el.holdRemaining.textContent = r.big;
+  if (r.unit != null) el.ringUnit.textContent = r.unit;
+  if (r.hint != null) setHint(r.hint, r.tone);
 }
 
 function setHint(text, tone) {
@@ -650,32 +661,160 @@ function isOverheadPose(kp) {
   return wristsUp && elbowsUp;
 }
 
-// LUMBAR EXTENSION (hands on the lower back, lean back). The tell that
-// separates this from just standing with arms at your sides:
-//   1. Wrists are up at WAIST level — between the shoulders and the hips
-//      (arms hanging put the wrists at or below the hips).
-//   2. Elbows are FLARED wider than the shoulders (hands go behind the back,
-//      pushing the elbows outward), whereas hanging arms keep the elbows
-//      roughly under the shoulders.
-function isLumbarPose(kp) {
-  if (!have(kp, "left_wrist", "right_wrist", "left_elbow", "right_elbow", "left_shoulder", "right_shoulder", "left_hip", "right_hip"))
+// LUMBAR EXTENSION is scored as MOVEMENT, not a static pose — a held position
+// isn't the therapy, the repeated extension is. We require the torso to be in
+// frame (so the user is standing back) and then count reps from the vertical
+// oscillation of the torso as they lean back and return.
+function lumbarGate(kp) {
+  return have(kp, "left_shoulder", "right_shoulder", "left_hip", "right_hip");
+}
+
+// Vertical position of the torso "core". As you lean back and straighten up,
+// this rises and falls; those swings are the reps we count.
+function lumbarSignal(kp) {
+  const sY = avgY(kp.left_shoulder, kp.right_shoulder);
+  const hY = avgY(kp.left_hip, kp.right_hip);
+  if (sY == null || hY == null) return null;
+  return (sY + hY) / 2;
+}
+
+// ============================================================
+// STRETCH EVALUATORS — turn each tick's keypoints into progress
+// ============================================================
+function makeEvaluator(key, opts = {}) {
+  const s = STRETCHES[key];
+  if (s.mode === "reps") return new RepEvaluator(s, opts.reps ?? s.repTarget);
+  return new HoldEvaluator(s, opts.holdMs ?? HOLD_MS);
+}
+
+// HOLD: accumulate time while a valid static pose is held; decays if dropped.
+class HoldEvaluator {
+  constructor(s, holdMs) {
+    this.s = s;
+    this.holdMs = holdMs;
+    this.held = 0;
+  }
+  result(valid) {
+    const progress = this.held / this.holdMs;
+    return {
+      valid,
+      progress,
+      done: this.held >= this.holdMs,
+      big: String(Math.max(0, Math.ceil((this.holdMs - this.held) / 1000))),
+      unit: "seconds",
+      hint: valid ? "Holding it — nice! Keep going ✓" : this.s.cue,
+      tone: valid ? "ok" : "warn",
+      debug: { mode: "hold", heldMs: Math.round(this.held) },
+    };
+  }
+  snapshot() {
+    return this.result(false);
+  }
+  update(kp, dt) {
+    const valid = kp ? this.s.check(kp) : false;
+    if (valid) this.held = Math.min(this.holdMs, this.held + Math.min(dt, DETECT_INTERVAL_MS * 3));
+    else this.held = Math.max(0, this.held - dt * 0.5);
+    return this.result(valid);
+  }
+}
+
+// REPS: count real repetitions via a zig-zag reversal detector on a body
+// signal. Each direction reversal that clears a minimum amplitude (scaled to
+// the user's torso, so it ignores jitter) is one rep. Reps don't decay — the
+// work is banked once it's done.
+class RepEvaluator {
+  constructor(s, target) {
+    this.s = s;
+    this.target = target;
+    this.reps = 0;
+    this.ema = null;
+    this.maxV = null;
+    this.minV = null;
+    this.dir = null; // "up" | "down"
+    this.minAmp = 24;
+    this.justRepped = false;
+  }
+  result(gated) {
+    const progress = Math.min(1, this.reps / this.target);
+    let hint, tone;
+    if (!gated) {
+      hint = "Step back so I can see your whole torso";
+      tone = "warn";
+    } else if (this.justRepped) {
+      hint = `Good rep! ${this.reps}/${this.target}`;
+      tone = "ok";
+    } else {
+      hint = this.s.cue;
+      tone = this.reps > 0 ? "ok" : "warn";
+    }
+    return {
+      valid: gated,
+      progress,
+      done: this.reps >= this.target,
+      big: String(this.reps),
+      unit: `of ${this.target} reps`,
+      hint,
+      tone,
+      debug: {
+        mode: "reps",
+        reps: this.reps,
+        signal: this.ema == null ? null : Math.round(this.ema),
+        minAmp: Math.round(this.minAmp),
+        dir: this.dir,
+      },
+    };
+  }
+  snapshot() {
+    return this.result(false);
+  }
+  update(kp, _dt) {
+    this.justRepped = false;
+    const gated = kp ? this.s.gate(kp) : false;
+    if (gated) {
+      const raw = this.s.signal(kp);
+      if (raw != null) {
+        this.minAmp = Math.max(18, torsoScale(kp) * 0.15);
+        this.ema = this.ema == null ? raw : this.ema * 0.6 + raw * 0.4;
+        this.justRepped = this._zigzag(this.ema);
+      }
+    }
+    return this.result(gated);
+  }
+  // Count a rep on each direction reversal whose swing exceeds minAmp.
+  _zigzag(v) {
+    if (this.maxV == null) {
+      this.maxV = this.minV = v;
+      return false;
+    }
+    this.maxV = Math.max(this.maxV, v);
+    this.minV = Math.min(this.minV, v);
+
+    if (this.dir == null) {
+      if (v <= this.maxV - this.minAmp) {
+        this.dir = "down";
+        this.minV = v;
+        this.reps += 1;
+        return true;
+      }
+      if (v >= this.minV + this.minAmp) {
+        this.dir = "up";
+        this.maxV = v;
+        this.reps += 1;
+        return true;
+      }
+    } else if (this.dir === "down" && v >= this.minV + this.minAmp) {
+      this.dir = "up";
+      this.maxV = v;
+      this.reps += 1;
+      return true;
+    } else if (this.dir === "up" && v <= this.maxV - this.minAmp) {
+      this.dir = "down";
+      this.minV = v;
+      this.reps += 1;
+      return true;
+    }
     return false;
-
-  const shoulderY = avgY(kp.left_shoulder, kp.right_shoulder);
-  const hipY = avgY(kp.left_hip, kp.right_hip);
-  const torso = torsoScale(kp);
-
-  // Wrists in the waist band: clearly below the shoulders, at or above the hips.
-  const waistLo = shoulderY + torso * 0.15; // a bit below the shoulders
-  const inWaistBand = (w) => w.y > waistLo && w.y < hipY + torso * 0.1;
-  const wristsAtWaist = inWaistBand(kp.left_wrist) && inWaistBand(kp.right_wrist);
-
-  // Elbows flared out wider than the shoulders.
-  const shoulderSpan = Math.abs(kp.left_shoulder.x - kp.right_shoulder.x);
-  const elbowSpan = Math.abs(kp.left_elbow.x - kp.right_elbow.x);
-  const elbowsFlared = elbowSpan > shoulderSpan * 1.1;
-
-  return wristsAtWaist && elbowsFlared;
+  }
 }
 
 // ---------- Skeleton overlay ----------
@@ -878,10 +1017,12 @@ function obReflectStretchChoice() {
 }
 
 // ---------- LIVE calibration (the wow moment) ----------
+// A lighter version of the real challenge: hold a shorter beat, or do just a
+// couple of reps — enough to prove the pose detection works on the user.
 function startCalibration() {
   const s = STRETCHES[state.obDefault];
   el.obCalStretchName.textContent = s.name;
-  state.obHeldMs = 0;
+  state.obEval = makeEvaluator(state.obDefault, { holdMs: CAL_HOLD_MS, reps: 2 });
   state.obLastTick = now();
   el.obCalRing.style.strokeDasharray = String(CAL_RING_CIRC);
   el.obCalRing.style.strokeDashoffset = String(CAL_RING_CIRC);
@@ -924,24 +1065,14 @@ async function calibrationTick() {
   }
 
   const kp = await estimatePoseFrom(el.obCalVideo);
-  const s = STRETCHES[state.obDefault];
-  const valid = kp ? s.check(kp) : false;
-  if (kp) drawSkeletonOn(el.obCalOverlay, kp, valid ? "#30d158" : "#64d2ff");
+  const r = state.obEval.update(kp, dt);
+  if (kp) drawSkeletonOn(el.obCalOverlay, kp, r.valid ? "#30d158" : "#64d2ff");
 
-  if (valid) {
-    state.obHeldMs = Math.min(CAL_HOLD_MS, state.obHeldMs + Math.min(dt, DETECT_INTERVAL_MS * 3));
-    el.obCalHint.textContent = "Perfect — hold it! ✓";
-    el.obCalHint.className = "pose-hint ok";
-  } else {
-    state.obHeldMs = Math.max(0, state.obHeldMs - dt * 0.5);
-    el.obCalHint.textContent = kp ? s.cue : "Step back so the camera sees you";
-    el.obCalHint.className = "pose-hint warn";
-  }
+  el.obCalHint.textContent = r.hint;
+  el.obCalHint.className = `pose-hint ${r.tone || ""}`;
+  el.obCalRing.style.strokeDashoffset = String(CAL_RING_CIRC * (1 - Math.max(0, Math.min(1, r.progress))));
 
-  const frac = state.obHeldMs / CAL_HOLD_MS;
-  el.obCalRing.style.strokeDashoffset = String(CAL_RING_CIRC * (1 - frac));
-
-  if (state.obHeldMs >= CAL_HOLD_MS) {
+  if (r.done) {
     stopCalibration();
     calibrationPassed();
   }
