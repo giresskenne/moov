@@ -259,21 +259,57 @@ body {
   font-weight: 600;
 }
 
-/* ---------- STEP 3: Challenge ---------- */
+/* ---------- STEP 3: Challenge (gif · camera · ring in a row) ---------- */
 .challenge-body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 48px;
+  gap: 40px;
   flex-wrap: wrap;
 }
+.challenge-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+.challenge-col figcaption {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .challenge-gif {
-  width: 320px;
-  max-width: 42vw;
-  height: auto;
+  width: 280px;
+  max-width: 30vw;
+  height: 280px;
+  object-fit: cover;
   border-radius: 18px;
   border: 2px solid var(--ring);
   background: #000;
+}
+/* Live camera view sits inline between the target and the ring. */
+.cam-stage {
+  position: relative;
+  width: 280px;
+  max-width: 30vw;
+  height: 280px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 2px solid var(--ring);
+  background: #000;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+.cam-stage video,
+.cam-stage canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* mirror for a natural selfie view */
 }
 
 .progress-ring-wrap {
@@ -362,50 +398,6 @@ body {
   100% {
     opacity: 0;
   }
-}
-
-/* ============================================================
-   PICTURE-IN-PICTURE WEBCAM
-   ============================================================ */
-.pip {
-  position: absolute;
-  bottom: 26px;
-  right: 26px;
-  width: 260px;
-  height: 195px;
-  border-radius: 16px;
-  overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
-  background: #000;
-  opacity: 0;
-  transform: translateY(12px) scale(0.98);
-  transition: opacity 0.6s ease, transform 0.6s ease;
-  z-index: 10;
-}
-.pip.visible {
-  opacity: 1;
-  transform: none;
-}
-.pip video,
-.pip canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transform: scaleX(-1); /* mirror for a natural selfie view */
-}
-.pip-label {
-  position: absolute;
-  bottom: 8px;
-  left: 10px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-  z-index: 2;
 }
 
 /* A quiet text link (idle screen "Replay intro"). */

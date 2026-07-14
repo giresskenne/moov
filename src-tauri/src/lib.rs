@@ -120,6 +120,14 @@ pub fn run() {
             get_timer_interval,
         ])
         .setup(move |app| {
+            // In dev, pop open the WebView DevTools so frontend console.log()
+            // output (the `[moov]` debug logs) is visible — those go to the
+            // WebView console, NOT the `tauri dev` terminal (which is Rust only).
+            #[cfg(debug_assertions)]
+            if let Some(window) = app.get_webview_window("main") {
+                window.open_devtools();
+            }
+
             // ---- Menu-bar (tray) icon: pause without quitting ----
             let pause_i = MenuItemBuilder::with_id("pause", "Pause Moov").build(app)?;
             let stretch_i = MenuItemBuilder::with_id("stretch", "Stretch now").build(app)?;

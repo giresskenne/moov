@@ -140,7 +140,6 @@ async function init() {
     holdRemaining: $("hold-remaining"),
     poseHint: $("pose-hint"),
 
-    pip: $("pip"),
     webcam: $("webcam"),
     overlay: $("overlay"),
 
@@ -267,7 +266,6 @@ function startFlow() {
   // Reset visuals.
   el.idleScreen.classList.remove("active");
   el.lockScreen.classList.add("active");
-  el.pip.classList.remove("visible");
   el.greenFlash.classList.remove("flash");
   el.chooser.querySelectorAll(".stretch-card").forEach((c) => {
     c.classList.remove("selected");
@@ -305,9 +303,9 @@ function stepInterruption() {
 // ---------- STEP 2 — THE PROMPT ----------
 async function stepPrompt() {
   showPhase("prompt");
-  // Fade the webcam in as picture-in-picture so the user can frame themselves.
+  // Warm the camera now so it's live the instant the challenge (with its
+  // inline camera view) appears.
   await startWebcam();
-  el.pip.classList.add("visible");
   dlog("prompt shown, awaiting stretch choice");
 }
 
@@ -454,7 +452,6 @@ async function stepRelease() {
   dlog("stepRelease");
   showPhase("release");
   el.greenFlash.classList.add("flash");
-  el.pip.classList.remove("visible");
 
   stopWebcam(); // stop the camera tracks
   await sleep(SUCCESS_HOLD_MS);
@@ -483,7 +480,6 @@ function resetToIdle() {
   clearInterval(state.interruptTimer);
   clearInterval(state.detectLoop);
   stopWebcam();
-  el.pip.classList.remove("visible");
   el.lockScreen.classList.remove("active");
   el.idleScreen.classList.add("active");
   startIdleCountdown();
@@ -621,6 +617,12 @@ function avgY(...pts) {
   return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : null;
 }
 
+// Every keypoint the check needs must be confidently present, otherwise we
+// bail (a face-only detection while seated must NOT count as a valid stretch).
+function have(kp, ...names) {
+  return names.every((n) => kp[n]);
+}
+
 // Rough torso length (shoulder→hip) used to scale "significant" margins so the
 // checks work regardless of how close the user stands to the camera.
 function torsoScale(kp) {
@@ -630,40 +632,50 @@ function torsoScale(kp) {
   return 120; // sensible pixel fallback
 }
 
-// OVERHEAD DECOMPRESSION: both wrists significantly higher than the eyes
-// (and, as a backstop, above the shoulders).
+// OVERHEAD DECOMPRESSION: arms genuinely reaching up — both WRISTS above the
+// eyes AND both ELBOWS above the shoulders. Requiring the elbows to clear the
+// shoulders rejects "hands resting near the face", which wrists-above-eyes
+// alone would accept.
 function isOverheadPose(kp) {
-  const lw = kp.left_wrist;
-  const rw = kp.right_wrist;
-  if (!lw || !rw) return false;
+  if (!have(kp, "left_wrist", "right_wrist", "left_elbow", "right_elbow", "left_shoulder", "right_shoulder"))
+    return false;
 
-  const eyeY = avgY(kp.left_eye, kp.right_eye, kp.nose);
-  const shoulderY = avgY(kp.left_shoulder, kp.right_shoulder);
-  const ref = eyeY ?? shoulderY;
+  const ref = avgY(kp.left_eye, kp.right_eye, kp.nose) ?? avgY(kp.left_shoulder, kp.right_shoulder);
   if (ref == null) return false;
 
-  const margin = torsoScale(kp) * 0.2; // "significantly" higher
-  const aboveEyes = lw.y < ref - margin && rw.y < ref - margin;
-  const aboveShoulders =
-    shoulderY == null || (lw.y < shoulderY && rw.y < shoulderY);
-  return aboveEyes && aboveShoulders;
+  const margin = torsoScale(kp) * 0.2; // "significantly" higher than the eyes
+  const wristsUp = kp.left_wrist.y < ref - margin && kp.right_wrist.y < ref - margin;
+  const elbowsUp =
+    kp.left_elbow.y < kp.left_shoulder.y && kp.right_elbow.y < kp.right_shoulder.y;
+  return wristsUp && elbowsUp;
 }
 
-// LUMBAR EXTENSION (standing back extension): hands rest on the lower back, so
-// both wrists sit roughly at hip height and clearly below the shoulders.
-// A proxy heuristic — tune the band to taste.
+// LUMBAR EXTENSION (hands on the lower back, lean back). The tell that
+// separates this from just standing with arms at your sides:
+//   1. Wrists are up at WAIST level — between the shoulders and the hips
+//      (arms hanging put the wrists at or below the hips).
+//   2. Elbows are FLARED wider than the shoulders (hands go behind the back,
+//      pushing the elbows outward), whereas hanging arms keep the elbows
+//      roughly under the shoulders.
 function isLumbarPose(kp) {
-  const lw = kp.left_wrist;
-  const rw = kp.right_wrist;
-  const hipY = avgY(kp.left_hip, kp.right_hip);
-  const shoulderY = avgY(kp.left_shoulder, kp.right_shoulder);
-  if (!lw || !rw || hipY == null || shoulderY == null) return false;
+  if (!have(kp, "left_wrist", "right_wrist", "left_elbow", "right_elbow", "left_shoulder", "right_shoulder", "left_hip", "right_hip"))
+    return false;
 
-  const band = torsoScale(kp) * 0.45; // vertical tolerance around the hips
-  const nearHips =
-    Math.abs(lw.y - hipY) < band && Math.abs(rw.y - hipY) < band;
-  const belowShoulders = lw.y > shoulderY && rw.y > shoulderY;
-  return nearHips && belowShoulders;
+  const shoulderY = avgY(kp.left_shoulder, kp.right_shoulder);
+  const hipY = avgY(kp.left_hip, kp.right_hip);
+  const torso = torsoScale(kp);
+
+  // Wrists in the waist band: clearly below the shoulders, at or above the hips.
+  const waistLo = shoulderY + torso * 0.15; // a bit below the shoulders
+  const inWaistBand = (w) => w.y > waistLo && w.y < hipY + torso * 0.1;
+  const wristsAtWaist = inWaistBand(kp.left_wrist) && inWaistBand(kp.right_wrist);
+
+  // Elbows flared out wider than the shoulders.
+  const shoulderSpan = Math.abs(kp.left_shoulder.x - kp.right_shoulder.x);
+  const elbowSpan = Math.abs(kp.left_elbow.x - kp.right_elbow.x);
+  const elbowsFlared = elbowSpan > shoulderSpan * 1.1;
+
+  return wristsAtWaist && elbowsFlared;
 }
 
 // ---------- Skeleton overlay ----------

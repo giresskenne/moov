@@ -232,8 +232,21 @@
       <!-- ---------- STEP 3 — THE CHALLENGE ---------- -->
       <section class="phase" data-phase="challenge">
         <h2 id="challenge-title" class="headline sm">Hold this position for 10 seconds</h2>
+        <!-- Three elements in a row: target stretch · your camera · countdown -->
         <div class="challenge-body">
-          <img id="challenge-gif" class="challenge-gif" alt="Target stretch" />
+          <figure class="challenge-col">
+            <img id="challenge-gif" class="challenge-gif" alt="Target stretch" />
+            <figcaption>Target</figcaption>
+          </figure>
+
+          <figure class="challenge-col">
+            <div class="cam-stage">
+              <video id="webcam" autoplay playsinline muted></video>
+              <canvas id="overlay"></canvas>
+            </div>
+            <figcaption>You</figcaption>
+          </figure>
+
           <div class="progress-ring-wrap">
             <svg class="progress-ring" viewBox="0 0 220 220">
               <circle class="progress-ring-bg" cx="110" cy="110" r="100" />
@@ -259,13 +272,6 @@
         <div class="release-emoji">🎉</div>
         <h1 class="headline">Great job, back to work!</h1>
       </section>
-
-      <!-- Picture-in-picture webcam (fades in from step 2 onward) -->
-      <div id="pip" class="pip">
-        <video id="webcam" autoplay playsinline muted></video>
-        <canvas id="overlay"></canvas>
-        <span class="pip-label">You</span>
-      </div>
     </div>
   </body>
 </html>
