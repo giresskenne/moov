@@ -669,13 +669,29 @@ function lumbarGate(kp) {
   return have(kp, "left_shoulder", "right_shoulder", "left_hip", "right_hip");
 }
 
-// Vertical position of the torso "core". As you lean back and straighten up,
-// this rises and falls; those swings are the reps we count.
+// Signal we watch oscillate = the torso's vertical extent (hip→shoulder gap).
+// This is deliberately translation-invariant: when you just bob or bounce in
+// place, shoulders and hips move together so the gap barely changes and NO
+// reps are earned. It only swings when the torso actually tilts (the upper
+// body leans back and the gap foreshortens, then returns) — the movement we
+// actually want. It can't tell lean-back from lean-forward on a 2D camera, so
+// the on-screen cue keeps the user doing the intended extension.
 function lumbarSignal(kp) {
   const sY = avgY(kp.left_shoulder, kp.right_shoulder);
   const hY = avgY(kp.left_hip, kp.right_hip);
   if (sY == null || hY == null) return null;
-  return (sY + hY) / 2;
+  return hY - sY;
+}
+
+// A body-size ruler that stays put while you lean: shoulder width. Used to
+// scale the rep amplitude threshold so it works near or far from the camera,
+// WITHOUT depending on the lean signal itself (which would be circular).
+function bodyScale(kp) {
+  if (kp.left_shoulder && kp.right_shoulder) {
+    const w = Math.abs(kp.left_shoulder.x - kp.right_shoulder.x);
+    if (w > 1) return w;
+  }
+  return torsoScale(kp);
 }
 
 // ============================================================
@@ -773,7 +789,8 @@ class RepEvaluator {
     if (gated) {
       const raw = this.s.signal(kp);
       if (raw != null) {
-        this.minAmp = Math.max(18, torsoScale(kp) * 0.15);
+        // Threshold scaled to shoulder width (a lean-independent body ruler).
+        this.minAmp = Math.max(14, bodyScale(kp) * 0.16);
         this.ema = this.ema == null ? raw : this.ema * 0.6 + raw * 0.4;
         this.justRepped = this._zigzag(this.ema);
       }
