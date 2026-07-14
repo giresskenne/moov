@@ -86,11 +86,14 @@ const STRETCHES = {
     gif: "https://media.post.rvohealth.io/wp-content/uploads/2020/11/Standing-extension.gif",
     name: "Lumbar Extension",
     title: "Do 5 slow back extensions",
+    setup: "Turn side-on to the camera — match the picture",
     cue: "Hands on your lower back — gently lean back, then return",
+    turnHint: "Turn to your side so I can see you lean",
     mode: "reps",
     repTarget: 5,
-    gate: lumbarGate, // torso must be in frame
-    signal: lumbarSignal, // vertical torso position we watch oscillate
+    gate: lumbarGate, // whole torso must be in frame
+    facing: lumbarFacing, // and the user must be side-on
+    signal: lumbarSignal, // horizontal lean we watch oscillate
   },
 };
 
@@ -333,7 +336,8 @@ function chooseStretch(key, card) {
   const s = STRETCHES[key];
   el.challengeGif.src = s.gif;
   el.promptTitle.textContent = "Get ready to do this.";
-  el.promptSub.textContent = s.name;
+  // Lead with the setup instruction (e.g. "turn side-on") when there is one.
+  el.promptSub.textContent = s.setup ? `${s.name} — ${s.setup}` : s.name;
 
   setTimeout(stepChallenge, GET_READY_MS);
 }
@@ -363,7 +367,8 @@ function stepChallenge() {
     return;
   }
 
-  setHint(state.detectorStatus === "ready" ? s.cue : "Warming up the pose detector…");
+  const firstHint = s.setup || s.cue;
+  setHint(state.detectorStatus === "ready" ? firstHint : "Warming up the pose detector…");
   clearInterval(state.detectLoop);
   state.detectLoop = setInterval(detectTick, DETECT_INTERVAL_MS);
 }
@@ -628,6 +633,11 @@ function avgY(...pts) {
   return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : null;
 }
 
+function avgX(...pts) {
+  const xs = pts.filter(Boolean).map((p) => p.x);
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+}
+
 // Every keypoint the check needs must be confidently present, otherwise we
 // bail (a face-only detection while seated must NOT count as a valid stretch).
 function have(kp, ...names) {
@@ -669,29 +679,29 @@ function lumbarGate(kp) {
   return have(kp, "left_shoulder", "right_shoulder", "left_hip", "right_hip");
 }
 
-// Signal we watch oscillate = the torso's vertical extent (hip→shoulder gap).
-// This is deliberately translation-invariant: when you just bob or bounce in
-// place, shoulders and hips move together so the gap barely changes and NO
-// reps are earned. It only swings when the torso actually tilts (the upper
-// body leans back and the gap foreshortens, then returns) — the movement we
-// actually want. It can't tell lean-back from lean-forward on a 2D camera, so
-// the on-screen cue keeps the user doing the intended extension.
+// Lumbar extension is measured from a SIDE-ON (profile) view — that's where a
+// 2D camera can actually see the back-and-forth lean (it becomes left/right
+// motion in the image), and it matches the side-view animation.
+//
+// Signal = horizontal offset of the shoulders over the hips. Standing upright
+// side-on, the shoulders sit roughly above the hips (offset ~0); as you lean
+// your upper body swings horizontally, then returns. It's translation-
+// invariant: stepping across the frame moves shoulders and hips together, so
+// the offset is unchanged and no reps are earned — only a real lean counts.
 function lumbarSignal(kp) {
-  const sY = avgY(kp.left_shoulder, kp.right_shoulder);
-  const hY = avgY(kp.left_hip, kp.right_hip);
-  if (sY == null || hY == null) return null;
-  return hY - sY;
+  const sX = avgX(kp.left_shoulder, kp.right_shoulder);
+  const hX = avgX(kp.left_hip, kp.right_hip);
+  if (sX == null || hX == null) return null;
+  return sX - hX;
 }
 
-// A body-size ruler that stays put while you lean: shoulder width. Used to
-// scale the rep amplitude threshold so it works near or far from the camera,
-// WITHOUT depending on the lean signal itself (which would be circular).
-function bodyScale(kp) {
-  if (kp.left_shoulder && kp.right_shoulder) {
-    const w = Math.abs(kp.left_shoulder.x - kp.right_shoulder.x);
-    if (w > 1) return w;
-  }
-  return torsoScale(kp);
+// Are we side-on? Facing the camera, the two shoulders are spread wide; in
+// profile they stack/overlap (small horizontal span), or one is hidden. We use
+// a small shoulder span relative to torso height as "side-on enough".
+function lumbarFacing(kp) {
+  if (!(kp.left_shoulder && kp.right_shoulder)) return true; // a shoulder hidden ⇒ profile
+  const span = Math.abs(kp.left_shoulder.x - kp.right_shoulder.x);
+  return span < torsoScale(kp) * 0.5;
 }
 
 // ============================================================
@@ -750,11 +760,15 @@ class RepEvaluator {
     this.minAmp = 24;
     this.justRepped = false;
   }
-  result(gated) {
+  result({ inFrame, sideOn }) {
+    const gated = inFrame && sideOn;
     const progress = Math.min(1, this.reps / this.target);
     let hint, tone;
-    if (!gated) {
+    if (!inFrame) {
       hint = "Step back so I can see your whole torso";
+      tone = "warn";
+    } else if (!sideOn) {
+      hint = this.s.turnHint || "Turn to your side";
       tone = "warn";
     } else if (this.justRepped) {
       hint = `Good rep! ${this.reps}/${this.target}`;
@@ -774,6 +788,7 @@ class RepEvaluator {
       debug: {
         mode: "reps",
         reps: this.reps,
+        sideOn,
         signal: this.ema == null ? null : Math.round(this.ema),
         minAmp: Math.round(this.minAmp),
         dir: this.dir,
@@ -781,21 +796,23 @@ class RepEvaluator {
     };
   }
   snapshot() {
-    return this.result(false);
+    return this.result({ inFrame: false, sideOn: false });
   }
   update(kp, _dt) {
     this.justRepped = false;
-    const gated = kp ? this.s.gate(kp) : false;
-    if (gated) {
+    const inFrame = kp ? this.s.gate(kp) : false;
+    const sideOn = inFrame && (this.s.facing ? this.s.facing(kp) : true);
+    if (inFrame && sideOn) {
       const raw = this.s.signal(kp);
       if (raw != null) {
-        // Threshold scaled to shoulder width (a lean-independent body ruler).
-        this.minAmp = Math.max(14, bodyScale(kp) * 0.16);
+        // Threshold scaled to torso HEIGHT (stays large side-on, unlike
+        // shoulder width which collapses in profile) and to the lean signal.
+        this.minAmp = Math.max(14, torsoScale(kp) * 0.14);
         this.ema = this.ema == null ? raw : this.ema * 0.6 + raw * 0.4;
         this.justRepped = this._zigzag(this.ema);
       }
     }
-    return this.result(gated);
+    return this.result({ inFrame, sideOn });
   }
   // Count a rep on each direction reversal whose swing exceeds minAmp.
   _zigzag(v) {
