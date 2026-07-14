@@ -77,10 +77,14 @@ const STRETCHES = {
   overhead: {
     gif: "https://cdn.jefit.com/assets/img/exercises/gifs/793.gif",
     name: "Overhead Decompression",
-    title: "Reach up and hold for 10 seconds",
-    cue: "Reach both arms straight overhead",
-    mode: "hold",
-    check: isOverheadPose,
+    title: "Reach from waist to overhead ×5",
+    setup: "Face the camera, hands down at your waist",
+    cue: "Reach both arms all the way up and push overhead",
+    mode: "romreps", // range-of-motion reps: waist → overhead → waist
+    repTarget: 5,
+    gate: overheadGate,
+    low: overheadLow, // hands down at the waist (rep start)
+    high: overheadHigh, // arms fully extended overhead (rep top)
   },
   lumbar: {
     gif: "https://media.post.rvohealth.io/wp-content/uploads/2020/11/Standing-extension.gif",
@@ -653,22 +657,35 @@ function torsoScale(kp) {
   return 120; // sensible pixel fallback
 }
 
-// OVERHEAD DECOMPRESSION: arms genuinely reaching up — both WRISTS above the
-// eyes AND both ELBOWS above the shoulders. Requiring the elbows to clear the
-// shoulders rejects "hands resting near the face", which wrists-above-eyes
-// alone would accept.
-function isOverheadPose(kp) {
+// OVERHEAD DECOMPRESSION is a range-of-motion rep: hands start low at the
+// waist, then reach all the way up. We detect two positions and count a rep on
+// each low → high transition (see RangeRepEvaluator), so simply holding your
+// hands up earns nothing — you have to actually perform the raise.
+function overheadGate(kp) {
+  // Enough of the upper body to judge arm height.
+  return have(kp, "left_shoulder", "right_shoulder") && (kp.nose || kp.left_eye || kp.right_eye);
+}
+
+// TOP of the rep: arms genuinely reaching up — both WRISTS above the eyes AND
+// both ELBOWS above the shoulders (rejects "hands resting near the face").
+function overheadHigh(kp) {
   if (!have(kp, "left_wrist", "right_wrist", "left_elbow", "right_elbow", "left_shoulder", "right_shoulder"))
     return false;
-
   const ref = avgY(kp.left_eye, kp.right_eye, kp.nose) ?? avgY(kp.left_shoulder, kp.right_shoulder);
   if (ref == null) return false;
-
-  const margin = torsoScale(kp) * 0.2; // "significantly" higher than the eyes
+  const margin = torsoScale(kp) * 0.2; // clearly above the eyes
   const wristsUp = kp.left_wrist.y < ref - margin && kp.right_wrist.y < ref - margin;
-  const elbowsUp =
-    kp.left_elbow.y < kp.left_shoulder.y && kp.right_elbow.y < kp.right_shoulder.y;
+  const elbowsUp = kp.left_elbow.y < kp.left_shoulder.y && kp.right_elbow.y < kp.right_shoulder.y;
   return wristsUp && elbowsUp;
+}
+
+// BOTTOM of the rep: both hands down, clearly below the shoulders (at the
+// waist / sides), so each rep must start from a real resting position.
+function overheadLow(kp) {
+  if (!have(kp, "left_wrist", "right_wrist", "left_shoulder", "right_shoulder")) return false;
+  const shoulderY = avgY(kp.left_shoulder, kp.right_shoulder);
+  const margin = torsoScale(kp) * 0.1;
+  return kp.left_wrist.y > shoulderY + margin && kp.right_wrist.y > shoulderY + margin;
 }
 
 // LUMBAR EXTENSION is scored as MOVEMENT, not a static pose — a held position
@@ -710,6 +727,7 @@ function lumbarFacing(kp) {
 function makeEvaluator(key, opts = {}) {
   const s = STRETCHES[key];
   if (s.mode === "reps") return new RepEvaluator(s, opts.reps ?? s.repTarget);
+  if (s.mode === "romreps") return new RangeRepEvaluator(s, opts.reps ?? s.repTarget);
   return new HoldEvaluator(s, opts.holdMs ?? HOLD_MS);
 }
 
@@ -848,6 +866,68 @@ class RepEvaluator {
       return true;
     }
     return false;
+  }
+}
+
+// RANGE-OF-MOTION REPS: the user must travel between two positions — a "low"
+// start (e.g. hands at the waist) and a "high" finish (e.g. arms overhead).
+// A rep is counted only on a low → high transition, and they must return to
+// low to arm the next one. So holding the end position earns nothing; the
+// actual movement is required.
+class RangeRepEvaluator {
+  constructor(s, target) {
+    this.s = s;
+    this.target = target;
+    this.reps = 0;
+    this.armed = false; // reached the low position, ready to count a high
+    this.justRepped = false;
+  }
+  result(gated, atLow, atHigh) {
+    const progress = Math.min(1, this.reps / this.target);
+    let hint, tone;
+    if (!gated) {
+      hint = "Stand back so I can see your arms";
+      tone = "warn";
+    } else if (this.justRepped) {
+      hint = `Nice! ${this.reps}/${this.target}`;
+      tone = "ok";
+    } else if (!this.armed) {
+      hint = "Bring your hands down to your waist";
+      tone = "warn";
+    } else {
+      hint = this.s.cue; // armed at the bottom → reach up
+      tone = "ok";
+    }
+    return {
+      valid: gated,
+      progress,
+      done: this.reps >= this.target,
+      big: String(this.reps),
+      unit: `of ${this.target} reps`,
+      hint,
+      tone,
+      debug: { mode: "romreps", reps: this.reps, armed: this.armed, atLow, atHigh },
+    };
+  }
+  snapshot() {
+    return this.result(false, false, false);
+  }
+  update(kp, _dt) {
+    this.justRepped = false;
+    const gated = kp ? this.s.gate(kp) : false;
+    let atLow = false;
+    let atHigh = false;
+    if (gated) {
+      atLow = this.s.low(kp);
+      atHigh = this.s.high(kp);
+      if (atLow) this.armed = true;
+      if (atHigh && this.armed) {
+        this.reps += 1;
+        this.armed = false; // must return to the low position to arm again
+        this.justRepped = true;
+      }
+    }
+    return this.result(gated, atLow, atHigh);
   }
 }
 
