@@ -68,6 +68,34 @@ const OB_STEPS = ["welcome", "how", "camera", "stretch", "calibrate", "done"];
 const LS_ONBOARDED = "moov.onboarded";
 const LS_DEFAULT_STRETCH = "moov.defaultStretch";
 
+// ---------- Settings ----------
+const LS_INTERVAL = "moov.intervalSecs"; // custom break interval (secs)
+const LS_DIFFICULTY = "moov.difficulty"; // legacy key — read once for migration
+const LS_SNOOZE = "moov.snoozeSecs"; // snooze length (secs)
+const LS_EXERCISES = "moov.exercises"; // per-exercise config (JSON, source of truth for reps)
+
+// Difficulty presets are a one-tap way to fill reps into every exercise. They
+// carry ONLY a rep count now; per-exercise reps are the source of truth (see
+// state.settings.exercises), and the highlighted preset is derived from them.
+// "normal" (5 reps) matches the app's original hardcoded value.
+const DIFFICULTIES = {
+  easy: { label: "Easy", reps: 3 },
+  normal: { label: "Normal", reps: 5 },
+  hard: { label: "Hard", reps: 8 },
+};
+const DEFAULT_DIFFICULTY = "normal";
+const REPS_MIN = 1;
+const REPS_MAX = 20;
+const INTERVAL_CHOICES = [15, 30, 45, 60]; // quick-pick minutes offered in Settings
+// Snooze durations offered both as the Settings default and in the per-break
+// snooze prompt. The prompt clamps these to the remaining snooze budget.
+const SNOOZE_CHOICES = [5, 10, 15, 30];
+const DEFAULT_SNOOZE_SECS = 5 * 60;
+
+// The timed fallback (no camera / model) needs a hold duration. Derive it from
+// the exercise's rep count so it still tracks difficulty (3→6s, 5→10s, 8→16s).
+const fallbackHoldMs = (reps) => Math.max(5000, reps * 2000);
+
 // Each stretch is scored one of two ways:
 //   mode:"hold" — hold a valid static pose for `holdMs` (e.g. arms overhead).
 //   mode:"reps" — perform a real repeated MOVEMENT; we count reps from the
@@ -77,7 +105,7 @@ const STRETCHES = {
   overhead: {
     gif: "https://cdn.jefit.com/assets/img/exercises/gifs/793.gif",
     name: "Overhead Decompression",
-    title: "Reach from waist to overhead ×5",
+    title: "Reach from waist to overhead ×{n}",
     setup: "Face the camera, hands down at your waist",
     cue: "Reach both arms all the way up and push overhead",
     mode: "romreps", // range-of-motion reps: waist → overhead → waist
@@ -89,7 +117,7 @@ const STRETCHES = {
   lumbar: {
     gif: "https://media.post.rvohealth.io/wp-content/uploads/2020/11/Standing-extension.gif",
     name: "Lumbar Extension",
-    title: "Do 5 slow back extensions",
+    title: "Do {n} slow back extensions",
     setup: "Turn side-on to the camera — match the picture",
     cue: "Hands on your lower back — gently lean back, then return",
     turnHint: "Turn to your side so I can see you lean",
@@ -113,8 +141,18 @@ const state = {
   evaluator: null, // active StretchEvaluator during the challenge
   lastTick: 0,
   timerIntervalSecs: 1800,
+  cycleSecs: 1800, // length of the current wait cycle (shorter after a snooze)
   countdownRemaining: 1800,
   countdownInterval: null,
+
+  // user settings (loaded from localStorage in loadSettings)
+  settings: {
+    intervalSecs: null, // null → use the backend default
+    snoozeSecs: DEFAULT_SNOOZE_SECS,
+    // Ordered per-exercise config: [{ id, enabled, reps }]. Ordered (not a map)
+    // so a break can later run enabled exercises as a sequence (routines).
+    exercises: [],
+  },
 
   // onboarding
   onboarding: false,
@@ -146,6 +184,23 @@ async function init() {
     countdownTimer: $("countdown-timer"),
     ringProgress: $("ring-progress"),
     btnTestLock: $("btn-test-lock"),
+    btnSettings: $("btn-settings"),
+    snoozeArea: $("snooze-area"),
+    snoozeOptions: $("snooze-options"),
+    snoozeChips: $("snooze-chips"),
+    snoozeBlocked: $("snooze-blocked"),
+
+    // settings
+    settingsScreen: $("settings-screen"),
+    settingsClose: $("settings-close"),
+    setInterval: $("set-interval"),
+    setIntervalChips: $("set-interval-chips"),
+    setDifficulty: $("set-difficulty"),
+    setExercises: $("set-exercises"),
+    setSnooze: $("set-snooze"),
+    setStretch: $("set-stretch"),
+    setReplay: $("set-replay"),
+    obIntervalLine: $("ob-interval-line"),
 
     greenFlash: $("green-flash"),
     interruptCount: $("interrupt-count"),
@@ -183,13 +238,23 @@ async function init() {
   el.ringFill.style.strokeDasharray = String(RING_CIRCUMFERENCE);
   el.ringFill.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
 
-  // Ask the backend how long between breaks (falls back to 30 min).
+  loadSettings();
+
+  // Ask the backend how long between breaks (falls back to 30 min), then push
+  // the user's saved interval (if any) so the running timer honors it.
   try {
     state.timerIntervalSecs = await invokeTauri("get_timer_interval");
-    state.countdownRemaining = state.timerIntervalSecs;
+    if (state.settings.intervalSecs) {
+      // Backend clamps to its minimum and returns the value it actually set.
+      const applied = await invokeTauri("set_timer_interval", {
+        secs: state.settings.intervalSecs,
+      });
+      state.timerIntervalSecs = applied;
+      state.settings.intervalSecs = applied;
+    }
     dlog("backend timer interval:", state.timerIntervalSecs, "secs");
   } catch (e) {
-    dwarn("get_timer_interval failed — using default", state.timerIntervalSecs, e);
+    dwarn("timer interval sync failed — using default", state.timerIntervalSecs, e);
   }
 
   startIdleCountdown();
@@ -234,6 +299,7 @@ async function init() {
   }
 
   wireOnboarding();
+  wireSettings();
 
   // First run? Roll out the red carpet. Otherwise land on the idle screen.
   if (shouldOnboard()) {
@@ -246,15 +312,30 @@ async function init() {
 // ============================================================
 // IDLE SCREEN — countdown to next break
 // ============================================================
-function startIdleCountdown() {
-  state.countdownRemaining = state.timerIntervalSecs;
+function startIdleCountdown(secs = state.timerIntervalSecs) {
+  // Seed a local baseline so the ring shows something immediately; the real
+  // value comes from the backend on the first tick (see syncCountdown).
+  state.cycleSecs = secs;
+  state.countdownRemaining = secs;
   renderCountdown();
   clearInterval(state.countdownInterval);
-  state.countdownInterval = setInterval(() => {
-    if (state.isLocked) return;
+  syncCountdown();
+  state.countdownInterval = setInterval(syncCountdown, 1000);
+}
+
+// Pull the authoritative countdown from the Rust timer so the idle ring always
+// matches when the break actually fires. Falls back to a local decrement when
+// there's no backend (plain browser / dev preview).
+async function syncCountdown() {
+  if (state.isLocked) return;
+  try {
+    const c = await invokeTauri("get_countdown");
+    state.countdownRemaining = c.remaining;
+    state.cycleSecs = c.cycle || state.timerIntervalSecs;
+  } catch {
     state.countdownRemaining = Math.max(0, state.countdownRemaining - 1);
-    renderCountdown();
-  }, 1000);
+  }
+  renderCountdown();
 }
 
 function renderCountdown() {
@@ -262,7 +343,8 @@ function renderCountdown() {
   const s = state.countdownRemaining % 60;
   el.countdownTimer.textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   const circ = 2 * Math.PI * 90; // r=90
-  const frac = state.timerIntervalSecs ? state.countdownRemaining / state.timerIntervalSecs : 0;
+  const denom = state.cycleSecs || state.timerIntervalSecs;
+  const frac = denom ? state.countdownRemaining / denom : 0;
   el.ringProgress.style.strokeDashoffset = String(circ * (1 - frac));
 }
 
@@ -288,13 +370,15 @@ function startFlow() {
   el.greenFlash.classList.remove("flash");
   el.chooser.querySelectorAll(".stretch-card").forEach((c) => {
     c.classList.remove("selected");
+    // Only offer exercises the user has enabled in Settings.
+    c.classList.toggle("hidden", !exEnabled(c.dataset.stretch));
     // Badge the user's onboarding pick as their go-to.
     c.classList.toggle("is-default", c.dataset.stretch === state.obDefault);
   });
   el.promptTitle.textContent = "Pick your stretch";
   el.promptSub.textContent = "Choose one to get started";
   el.ringFill.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
-  el.holdRemaining.textContent = String(HOLD_MS / 1000);
+  el.holdRemaining.textContent = String(exReps(state.obDefault));
 
   // Warm up the pose model in the background so step 3 is snappy.
   loadDetector();
@@ -322,6 +406,7 @@ function stepInterruption() {
 // ---------- STEP 2 — THE PROMPT ----------
 async function stepPrompt() {
   showPhase("prompt");
+  prepareSnooze();
   // Warm the camera now so it's live the instant the challenge (with its
   // inline camera view) appears.
   await startWebcam();
@@ -350,10 +435,11 @@ function chooseStretch(key, card) {
 function stepChallenge() {
   showPhase("challenge");
   const s = STRETCHES[state.stretch];
-  el.challengeTitle.textContent = s.title;
+  const reps = exReps(state.stretch);
+  el.challengeTitle.textContent = s.title.replace("{n}", String(reps));
   el.challengeGif.src = s.gif;
 
-  state.evaluator = makeEvaluator(state.stretch);
+  state.evaluator = makeEvaluator(state.stretch, { reps, holdMs: fallbackHoldMs(reps) });
   state.lastTick = now();
   state.tickCount = 0;
   applyChallengeUI(state.evaluator.snapshot());
@@ -429,23 +515,24 @@ function summarizeKeypoints(kp) {
   };
 }
 
-// Timed fallback when the detector can't load — still requires 10s of standing.
+// Timed fallback when the detector can't load — still requires a standing hold.
 function startTimedFallback() {
   dlog("startTimedFallback (no pose check)");
+  const holdMs = fallbackHoldMs(exReps(state.stretch));
   let held = 0;
   state.lastTick = now();
   setHint("Pose check unavailable — take your stretch, unlocking on the timer.", "warn");
   clearInterval(state.detectLoop);
   state.detectLoop = setInterval(() => {
     const t = now();
-    held = Math.min(HOLD_MS, held + (t - state.lastTick));
+    held = Math.min(holdMs, held + (t - state.lastTick));
     state.lastTick = t;
     applyChallengeUI({
-      progress: held / HOLD_MS,
-      big: String(Math.ceil((HOLD_MS - held) / 1000)),
+      progress: held / holdMs,
+      big: String(Math.ceil((holdMs - held) / 1000)),
       unit: "seconds",
     });
-    if (held >= HOLD_MS) {
+    if (held >= holdMs) {
       clearInterval(state.detectLoop);
       stepRelease();
     }
@@ -1043,6 +1130,7 @@ function startOnboarding() {
   el.idleScreen.classList.remove("active");
   el.lockScreen.classList.remove("active");
   el.onboarding.classList.add("active");
+  reflectDynamicCopy(); // "Every N minutes" reflects the configured interval
   // Warm up MoveNet in the background so calibration is instant.
   loadDetector();
   obGoto(0);
@@ -1248,6 +1336,358 @@ function burstConfetti(container, count) {
     bit.style.animationDuration = `${1.4 + Math.random() * 0.9}s`;
     container.appendChild(bit);
     setTimeout(() => bit.remove(), 2600);
+  }
+}
+
+// ============================================================
+// SETTINGS
+//   Break interval (pushed to the Rust timer), per-exercise reps + on/off with
+//   one-tap difficulty presets, snooze length, default stretch, and replay.
+//   All persisted to localStorage; the interval also lives in the backend so
+//   the timer honors it.
+// ============================================================
+
+// ---------- Per-exercise config helpers ----------
+// Source of truth for reps is state.settings.exercises: [{ id, enabled, reps }].
+const EXERCISE_IDS = Object.keys(STRETCHES);
+
+function exEntry(id) {
+  return state.settings.exercises.find((e) => e.id === id);
+}
+function exReps(id) {
+  const e = exEntry(id);
+  return e ? e.reps : STRETCHES[id]?.repTarget ?? DIFFICULTIES[DEFAULT_DIFFICULTY].reps;
+}
+function exEnabled(id) {
+  const e = exEntry(id);
+  return e ? e.enabled : true;
+}
+function enabledExercises() {
+  return state.settings.exercises.filter((e) => e.enabled);
+}
+
+// The highlighted difficulty preset is derived: if every enabled exercise shares
+// a rep count that matches a preset, that preset is "active"; otherwise none
+// (the user has a custom mix).
+function currentPreset() {
+  const reps = enabledExercises().map((e) => e.reps);
+  if (!reps.length || !reps.every((r) => r === reps[0])) return null;
+  const match = Object.entries(DIFFICULTIES).find(([, d]) => d.reps === reps[0]);
+  return match ? match[0] : null;
+}
+
+function applyPreset(key) {
+  const d = DIFFICULTIES[key];
+  if (!d) return;
+  state.settings.exercises.forEach((e) => {
+    e.reps = d.reps;
+  });
+  persistExercises();
+}
+
+function clampReps(n, fallback) {
+  const v = parseInt(n, 10);
+  if (!Number.isFinite(v)) return fallback;
+  return Math.max(REPS_MIN, Math.min(REPS_MAX, v));
+}
+
+function persistExercises() {
+  persist(LS_EXERCISES, JSON.stringify(state.settings.exercises));
+}
+
+function loadSettings() {
+  const get = (k) => {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  };
+  const iv = parseInt(get(LS_INTERVAL), 10);
+  if (Number.isFinite(iv) && iv > 0) state.settings.intervalSecs = iv;
+
+  const sn = parseInt(get(LS_SNOOZE), 10);
+  if (Number.isFinite(sn) && sn > 0) state.settings.snoozeSecs = sn;
+
+  state.settings.exercises = loadExercises(get);
+
+  dlog("settings loaded", state.settings);
+}
+
+// Build the exercise list from storage, merging with defaults so a newly added
+// exercise still shows up, and migrating the old global "difficulty" preset
+// (from the first Settings release) into per-exercise reps.
+function loadExercises(get) {
+  let stored = null;
+  try {
+    stored = JSON.parse(get(LS_EXERCISES) || "null");
+  } catch {
+    stored = null;
+  }
+
+  // One-time migration: seed reps from a legacy difficulty preset if present.
+  const legacy = get(LS_DIFFICULTY);
+  const legacyReps = legacy && DIFFICULTIES[legacy] ? DIFFICULTIES[legacy].reps : null;
+
+  return EXERCISE_IDS.map((id) => {
+    const saved = Array.isArray(stored) ? stored.find((e) => e && e.id === id) : null;
+    if (saved) {
+      return { id, enabled: saved.enabled !== false, reps: clampReps(saved.reps, STRETCHES[id].repTarget) };
+    }
+    return { id, enabled: true, reps: legacyReps ?? STRETCHES[id].repTarget };
+  });
+}
+
+function persist(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    /* ignore */
+  }
+}
+
+function wireSettings() {
+  if (!el.settingsScreen) return;
+  if (el.btnSettings) el.btnSettings.addEventListener("click", openSettings);
+  if (el.settingsClose) el.settingsClose.addEventListener("click", closeSettings);
+  if (el.setInterval) el.setInterval.addEventListener("change", onIntervalInput);
+  if (el.setReplay) {
+    el.setReplay.addEventListener("click", () => {
+      closeSettings();
+      try {
+        localStorage.removeItem(LS_ONBOARDED);
+      } catch {
+        /* ignore */
+      }
+      startOnboarding();
+    });
+  }
+}
+
+function openSettings() {
+  dlog("openSettings");
+  renderIntervalControl();
+  renderDifficulty();
+  renderExercises();
+
+  buildSeg(
+    el.setSnooze,
+    SNOOZE_CHOICES.map((m) => ({ value: m * 60, label: `${m} min` })),
+    state.settings.snoozeSecs,
+    (value) => {
+      state.settings.snoozeSecs = value;
+      persist(LS_SNOOZE, value);
+    }
+  );
+
+  buildSeg(
+    el.setStretch,
+    EXERCISE_IDS.map((id) => ({ value: id, label: STRETCHES[id].name })),
+    state.obDefault,
+    (value) => {
+      state.obDefault = value;
+      persist(LS_DEFAULT_STRETCH, value);
+    }
+  );
+
+  el.idleScreen.classList.remove("active");
+  el.settingsScreen.classList.add("active");
+}
+
+function closeSettings() {
+  el.settingsScreen.classList.remove("active");
+  el.idleScreen.classList.add("active");
+}
+
+// Difficulty presets: one tap fills reps into every exercise. Highlight is
+// derived from the current per-exercise reps (null → "custom", nothing lit).
+function renderDifficulty() {
+  buildSeg(
+    el.setDifficulty,
+    Object.entries(DIFFICULTIES).map(([value, d]) => ({ value, label: `${d.label} · ${d.reps} reps` })),
+    currentPreset(),
+    (value) => {
+      applyPreset(value);
+      renderExercises();
+      renderDifficulty();
+    }
+  );
+}
+
+// One editable row per exercise: enable toggle + rep count.
+function renderExercises() {
+  if (!el.setExercises) return;
+  el.setExercises.innerHTML = "";
+  state.settings.exercises.forEach((e) => {
+    const s = STRETCHES[e.id];
+    const item = document.createElement("div");
+    item.className = "ex-item";
+
+    const toggle = document.createElement("label");
+    toggle.className = "ex-toggle";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = e.enabled;
+    cb.addEventListener("change", () => {
+      // Never let the user disable the last enabled exercise.
+      if (!cb.checked && enabledExercises().length <= 1) {
+        cb.checked = true;
+        return;
+      }
+      e.enabled = cb.checked;
+      persistExercises();
+      item.classList.toggle("off", !e.enabled);
+      renderDifficulty();
+    });
+    toggle.appendChild(cb);
+    toggle.appendChild(document.createTextNode(` ${s.name}`));
+
+    const repsWrap = document.createElement("div");
+    repsWrap.className = "ex-reps";
+    const reps = document.createElement("input");
+    reps.type = "number";
+    reps.min = String(REPS_MIN);
+    reps.max = String(REPS_MAX);
+    reps.className = "num-input reps-input";
+    reps.value = String(e.reps);
+    reps.setAttribute("aria-label", `${s.name} reps`);
+    reps.addEventListener("change", () => {
+      const v = clampReps(reps.value, e.reps);
+      reps.value = String(v);
+      e.reps = v;
+      persistExercises();
+      renderDifficulty();
+    });
+    const unit = document.createElement("span");
+    unit.className = "unit";
+    unit.textContent = "reps";
+    repsWrap.appendChild(reps);
+    repsWrap.appendChild(unit);
+
+    item.classList.toggle("off", !e.enabled);
+    item.appendChild(toggle);
+    item.appendChild(repsWrap);
+    el.setExercises.appendChild(item);
+  });
+}
+
+// Interval quick-pick chips + a custom minutes input, kept in sync.
+function renderIntervalControl() {
+  const mins = Math.max(1, Math.round(state.timerIntervalSecs / 60));
+  if (el.setInterval) el.setInterval.value = String(mins);
+  buildSeg(
+    el.setIntervalChips,
+    INTERVAL_CHOICES.map((m) => ({ value: m, label: `${m}m` })),
+    INTERVAL_CHOICES.includes(mins) ? mins : null,
+    (m) => {
+      if (el.setInterval) el.setInterval.value = String(m);
+      applyInterval(m);
+    }
+  );
+}
+
+// Build a segmented button group. `options` is [{value, label}]; `onPick` fires
+// with the chosen value and highlights the button.
+function buildSeg(container, options, current, onPick) {
+  if (!container) return;
+  container.innerHTML = "";
+  options.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "seg-btn";
+    btn.textContent = opt.label;
+    if (String(opt.value) === String(current)) btn.classList.add("active");
+    btn.addEventListener("click", () => {
+      container.querySelectorAll(".seg-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      onPick(opt.value);
+    });
+    container.appendChild(btn);
+  });
+}
+
+function onIntervalInput() {
+  applyInterval(parseInt(el.setInterval.value, 10));
+}
+
+// Push a new interval (in minutes) to the backend, persist it, and resync UI.
+async function applyInterval(mins) {
+  const m = Math.max(1, Number.isFinite(mins) ? mins : 1);
+  let secs = m * 60;
+  try {
+    // Backend clamps to its minimum and returns the value it actually stored.
+    secs = await invokeTauri("set_timer_interval", { secs });
+  } catch (e) {
+    dwarn("set_timer_interval failed", e);
+  }
+  state.timerIntervalSecs = secs;
+  state.settings.intervalSecs = secs;
+  persist(LS_INTERVAL, secs);
+  // Reflect the new interval on the idle countdown + onboarding copy immediately.
+  if (!state.isLocked) startIdleCountdown();
+  reflectDynamicCopy();
+  renderIntervalControl();
+}
+
+// Keep interval-dependent copy (onboarding "how it works") in sync.
+function reflectDynamicCopy() {
+  if (!el.obIntervalLine) return;
+  const mins = Math.max(1, Math.round(state.timerIntervalSecs / 60));
+  el.obIntervalLine.textContent = `Every ${mins} minutes`;
+}
+
+// Prepare the per-break snooze prompt: ask the backend how much snooze budget
+// is left, then offer only the durations that fit. When the 2-hour cap is
+// spent, hide the options and explain why (the break becomes mandatory).
+async function prepareSnooze() {
+  if (!el.snoozeArea) return;
+  let budgetSecs = Infinity; // no backend (browser/dev) → don't block
+  try {
+    budgetSecs = await invokeTauri("get_snooze_budget");
+  } catch {
+    /* no backend */
+  }
+  const fits = SNOOZE_CHOICES.filter((m) => m * 60 <= budgetSecs);
+  dlog("prepareSnooze", { budgetSecs, fits });
+
+  if (!fits.length) {
+    el.snoozeOptions.classList.add("hidden");
+    el.snoozeBlocked.classList.remove("hidden");
+    return;
+  }
+  el.snoozeBlocked.classList.add("hidden");
+  el.snoozeOptions.classList.remove("hidden");
+  buildSnoozeChips(fits);
+}
+
+function buildSnoozeChips(mins) {
+  const defaultSecs = state.settings.snoozeSecs;
+  buildSeg(
+    el.snoozeChips,
+    mins.map((m) => ({ value: m * 60, label: `${m} min` })),
+    // Pre-highlight the user's default snooze if it's on offer.
+    mins.some((m) => m * 60 === defaultSecs) ? defaultSecs : null,
+    (secs) => snoozeBreak(secs)
+  );
+}
+
+// Snooze escape hatch: unlock now, push the next break out by `secs`. The
+// backend clamps to the remaining budget and returns what it actually applied.
+async function snoozeBreak(secs) {
+  dlog("snoozeBreak", secs);
+  // Drop the frontend lock first so the backend's screen-unlocked event (fired
+  // by snooze_break) is a no-op instead of resetting to the full interval.
+  state.isLocked = false;
+  clearInterval(state.interruptTimer);
+  clearInterval(state.detectLoop);
+  stopWebcam();
+  el.lockScreen.classList.remove("active");
+  el.idleScreen.classList.add("active");
+  startIdleCountdown(secs);
+  try {
+    await invokeTauri("snooze_break", { secs });
+  } catch (e) {
+    dwarn("snooze_break failed (no backend?)", e);
   }
 }
 

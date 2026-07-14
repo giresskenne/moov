@@ -43,9 +43,27 @@ body {
   align-items: center;
   justify-content: center;
   text-align: center;
+  /* Scroll instead of clipping when content is taller/wider than the window.
+     The centered content uses `margin: auto` so it stays centred when it fits
+     and becomes scrollable (both ends reachable) when it doesn't. */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .screen.active {
   display: flex;
+}
+
+/* Screens whose content is a single centred column get breathing room + the
+   margin:auto centering trick so they never clip on small windows. */
+#idle-screen,
+#onboarding-screen,
+#settings-screen {
+  padding: clamp(16px, 4vw, 40px);
+}
+.idle-container,
+.ob-shell,
+.settings-panel {
+  margin: auto;
 }
 
 .hidden {
@@ -198,7 +216,6 @@ body {
   display: grid;
   place-items: center;
   border: 3px solid var(--accent);
-  box-shadow: 0 0 60px rgba(94, 92, 230, 0.45);
 }
 .interrupt-count span {
   font-size: 72px;
@@ -224,8 +241,8 @@ body {
   justify-content: center;
 }
 .stretch-card {
-  width: 300px;
-  max-width: 40vw;
+  flex: 0 1 300px;
+  max-width: min(300px, 100%);
   border-radius: 18px;
   overflow: hidden;
   border: 2px solid var(--ring);
@@ -335,7 +352,6 @@ body {
   stroke-dasharray: 628.318; /* 2πr, r=100 */
   stroke-dashoffset: 628.318; /* start empty */
   transition: stroke-dashoffset 0.15s linear;
-  filter: drop-shadow(0 0 8px rgba(48, 209, 88, 0.55));
 }
 .progress-ring-label {
   position: absolute;
@@ -420,36 +436,17 @@ body {
    ONBOARDING
    ============================================================ */
 #onboarding-screen {
-  overflow: hidden;
   background: #06070c;
 }
 
-/* Slow-drifting aurora backdrop */
 .ob-aurora {
-  position: absolute;
-  inset: -30%;
-  background:
-    radial-gradient(40% 40% at 20% 30%, rgba(94, 92, 230, 0.45), transparent 60%),
-    radial-gradient(45% 45% at 80% 25%, rgba(100, 210, 255, 0.4), transparent 60%),
-    radial-gradient(45% 45% at 55% 80%, rgba(191, 90, 242, 0.4), transparent 60%);
-  filter: blur(40px);
-  animation: aurora 18s ease-in-out infinite alternate;
-  z-index: 0;
-}
-@keyframes aurora {
-  0% {
-    transform: translate3d(-4%, -2%, 0) scale(1);
-  }
-  100% {
-    transform: translate3d(4%, 3%, 0) scale(1.15);
-  }
+  display: none;
 }
 
 .ob-shell {
   position: relative;
   z-index: 2;
   width: min(920px, 92vw);
-  max-height: 92vh;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -531,7 +528,7 @@ body {
   place-items: center;
   background: linear-gradient(145deg, rgba(94, 92, 230, 0.35), rgba(100, 210, 255, 0.25));
   border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 20px 60px rgba(94, 92, 230, 0.4);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
   animation: float 4s ease-in-out infinite;
 }
 .ob-logo.big {
@@ -580,7 +577,6 @@ body {
 .ob-btn.primary {
   color: #fff;
   background: linear-gradient(135deg, var(--accent-2), var(--accent));
-  box-shadow: 0 10px 26px rgba(94, 92, 230, 0.45);
 }
 .ob-btn.lg {
   font-size: 17px;
@@ -604,8 +600,8 @@ body {
   justify-content: center;
 }
 .ob-card {
-  width: 230px;
-  max-width: 40vw;
+  flex: 1 1 200px;
+  max-width: 260px;
   padding: 24px 20px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.04);
@@ -642,6 +638,7 @@ body {
 }
 .ob-cam-frame.big {
   width: 460px;
+  max-width: 90vw;
 }
 .ob-cam-frame video,
 .ob-cam-frame canvas {
@@ -728,7 +725,6 @@ body {
   stroke-dasharray: 339.29; /* 2πr, r=54 */
   stroke-dashoffset: 339.29;
   transition: stroke-dashoffset 0.15s linear;
-  filter: drop-shadow(0 0 6px rgba(48, 209, 88, 0.6));
 }
 .ob-cal-check {
   position: absolute;
@@ -745,15 +741,6 @@ body {
   opacity: 1;
   transform: scale(1);
 }
-.cal-done .ob-cal-ring {
-  animation: pulse-ok 0.6s ease;
-}
-@keyframes pulse-ok {
-  50% {
-    filter: drop-shadow(0 0 18px rgba(48, 209, 88, 0.9));
-  }
-}
-
 /* Confetti */
 .ob-confetti {
   position: absolute;
@@ -784,8 +771,239 @@ body {
   }
 }
 
+/* ============================================================
+   SETTINGS
+   ============================================================ */
+#settings-screen {
+  background: radial-gradient(120% 120% at 50% 0%, #1a1f2e 0%, var(--bg) 60%);
+}
+
+.idle-links {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+
+.settings-panel {
+  width: min(560px, 92vw);
+  margin: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--ring);
+  border-radius: 18px;
+  padding: 26px 28px;
+  text-align: left;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.settings-title {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.settings-x {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--ring);
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.settings-x:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px 20px;
+  padding: 18px 0;
+  border-top: 1px solid var(--ring);
+  /* Wrap the control below the label when they can't sit side by side. */
+  flex-wrap: wrap;
+}
+.setting-label {
+  flex: 1 1 200px;
+}
+.setting-label h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.setting-label p {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 3px;
+}
+.setting-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.setting-control .unit {
+  color: var(--muted);
+  font-size: 14px;
+}
+.num-input {
+  width: 72px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--ring);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 15px;
+  text-align: center;
+}
+.num-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Segmented button group. Grows to take the row's free space and wraps its
+   buttons rather than overflowing; drops below the label on tight widths. */
+.seg {
+  display: flex;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.seg-btn {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--ring);
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.seg-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.seg-btn.active {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* Break-interval control: quick-pick chips + a custom minutes field. */
+.interval-control {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.interval-custom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Per-exercise config rows */
+.ex-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ex-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--ring);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.ex-item.off {
+  opacity: 0.5;
+}
+.ex-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ex-toggle input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.ex-reps {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.reps-input {
+  width: 60px;
+}
+
+/* ---------- Snooze prompt (break flow, step 2) ---------- */
+.snooze-area {
+  margin-top: 10px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.snooze-options {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.snooze-label {
+  color: var(--muted);
+  font-size: 14px;
+}
+.snooze-options .seg {
+  flex: 0 0 auto;
+  justify-content: center;
+}
+.snooze-blocked {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Narrow windows: stack each setting's control under its label, flush left. */
+@media (max-width: 560px) {
+  .settings-panel {
+    padding: 20px 18px;
+  }
+  .settings-title {
+    font-size: 21px;
+  }
+  .setting-row {
+    align-items: flex-start;
+  }
+  .seg {
+    justify-content: flex-start;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .ob-aurora,
   .ob-logo,
   .ob-logo.big,
   .interrupt-count span,

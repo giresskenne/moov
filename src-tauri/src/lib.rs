@@ -5,11 +5,36 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-// 30 minutes in seconds for production, configurable via DEV mode
+// Default time between breaks. The live value lives in `AppState.interval_secs`
+// (settable from the frontend); this is only the startup default.
 #[cfg(debug_assertions)]
 const TIMER_INTERVAL_SECS: u64 = 15; // 15 seconds in dev for testing
 #[cfg(not(debug_assertions))]
 const TIMER_INTERVAL_SECS: u64 = 1800; // 30 minutes in production
+
+// Floor for a user-chosen interval, so Settings can't set breaks so frequently
+// they're unusable. Lower in dev to keep testing fast.
+#[cfg(debug_assertions)]
+const MIN_INTERVAL_SECS: u64 = 5;
+#[cfg(not(debug_assertions))]
+const MIN_INTERVAL_SECS: u64 = 60;
+
+// Cumulative snooze allowed since the last completed stretch. Once the user has
+// deferred breaks for this long without moving, snooze is refused and the break
+// becomes mandatory. Shorter in dev so the cap is reachable during testing.
+#[cfg(debug_assertions)]
+const SNOOZE_CAP_SECS: u64 = 30 * 60;
+#[cfg(not(debug_assertions))]
+const SNOOZE_CAP_SECS: u64 = 2 * 60 * 60; // 2 hours
+
+/// Countdown snapshot handed to the frontend so its idle ring matches the real
+/// (backend) timer instead of running an independent clock.
+#[derive(Clone, serde::Serialize)]
+struct Countdown {
+    remaining: u64, // seconds until the next break
+    cycle: u64,     // length of the current wait cycle (interval or snooze)
+    paused: bool,
+}
 
 /// Managed state to track whether screen is currently locked
 struct AppState {
@@ -18,6 +43,17 @@ struct AppState {
     /// When > 0, the next break fires after this many seconds instead of the
     /// full interval (set by a snooze). Consumed once, then reset to 0.
     snooze_secs: AtomicU64,
+    /// Live time between breaks, in seconds. Seeded from `TIMER_INTERVAL_SECS`
+    /// and updated by `set_timer_interval` when the user changes it in Settings.
+    interval_secs: AtomicU64,
+    /// Seconds until the next break, republished by the timer each tick.
+    remaining_secs: AtomicU64,
+    /// Length of the current wait cycle (interval, or a snooze if pending).
+    cycle_secs: AtomicU64,
+    /// Cumulative snooze taken since the last completed stretch. Reset on
+    /// unlock_screen (a real stretch), grown by snooze_break, capped at
+    /// SNOOZE_CAP_SECS.
+    snooze_used_secs: AtomicU64,
 }
 
 /// Put the window into "break blocker" mode: fullscreen, always-on-top, and
@@ -44,6 +80,8 @@ fn release_lock(window: &WebviewWindow) {
 #[tauri::command]
 fn unlock_screen(app: AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
     state.is_locked.store(false, Ordering::SeqCst);
+    // Completing a real stretch clears the snooze debt.
+    state.snooze_used_secs.store(0, Ordering::SeqCst);
     app.emit("screen-unlocked", ()).map_err(|e| e.to_string())?;
     if let Some(window) = app.get_webview_window("main") {
         release_lock(&window);
@@ -54,15 +92,27 @@ fn unlock_screen(app: AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Resu
 /// Snooze the current break: unlock now, but schedule the next break to fire
 /// after `secs` instead of the full interval. This is the escape valve for
 /// meetings / incidents / "I genuinely can't stand right now".
+///
+/// Snooze is capped: the requested duration is clamped to the remaining budget
+/// (SNOOZE_CAP_SECS minus what's already been snoozed since the last stretch),
+/// and the call is refused once that budget is exhausted. Returns the seconds
+/// actually snoozed.
 #[tauri::command]
-fn snooze_break(secs: u64, app: AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.snooze_secs.store(secs, Ordering::SeqCst);
+fn snooze_break(secs: u64, app: AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<u64, String> {
+    let used = state.snooze_used_secs.load(Ordering::SeqCst);
+    let budget = SNOOZE_CAP_SECS.saturating_sub(used);
+    let eff = secs.min(budget);
+    if eff == 0 {
+        return Err("snooze budget exhausted".into());
+    }
+    state.snooze_used_secs.store(used + eff, Ordering::SeqCst);
+    state.snooze_secs.store(eff, Ordering::SeqCst);
     state.is_locked.store(false, Ordering::SeqCst);
     app.emit("screen-unlocked", ()).map_err(|e| e.to_string())?;
     if let Some(window) = app.get_webview_window("main") {
         release_lock(&window);
     }
-    Ok(())
+    Ok(eff)
 }
 
 /// Called by the timer (or "Stretch now") to lock the screen.
@@ -91,10 +141,35 @@ fn set_timer_paused(paused: bool, state: tauri::State<'_, Arc<AppState>>) {
     state.timer_paused.store(paused, Ordering::SeqCst);
 }
 
-/// Returns the timer interval in seconds
+/// Returns the current timer interval in seconds.
 #[tauri::command]
-fn get_timer_interval() -> u64 {
-    TIMER_INTERVAL_SECS
+fn get_timer_interval(state: tauri::State<'_, Arc<AppState>>) -> u64 {
+    state.interval_secs.load(Ordering::SeqCst)
+}
+
+/// Set the time between breaks (from Settings). Clamped to `MIN_INTERVAL_SECS`.
+/// Takes effect on the current countdown — no restart needed.
+#[tauri::command]
+fn set_timer_interval(secs: u64, state: tauri::State<'_, Arc<AppState>>) -> u64 {
+    let clamped = secs.max(MIN_INTERVAL_SECS);
+    state.interval_secs.store(clamped, Ordering::SeqCst);
+    clamped
+}
+
+/// Authoritative countdown for the idle screen — reflects the real timer.
+#[tauri::command]
+fn get_countdown(state: tauri::State<'_, Arc<AppState>>) -> Countdown {
+    Countdown {
+        remaining: state.remaining_secs.load(Ordering::SeqCst),
+        cycle: state.cycle_secs.load(Ordering::SeqCst),
+        paused: state.timer_paused.load(Ordering::SeqCst),
+    }
+}
+
+/// Seconds of snooze the user still has before the cap forces a break.
+#[tauri::command]
+fn get_snooze_budget(state: tauri::State<'_, Arc<AppState>>) -> u64 {
+    SNOOZE_CAP_SECS.saturating_sub(state.snooze_used_secs.load(Ordering::SeqCst))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -103,6 +178,10 @@ pub fn run() {
         is_locked: AtomicBool::new(false),
         timer_paused: AtomicBool::new(false),
         snooze_secs: AtomicU64::new(0),
+        interval_secs: AtomicU64::new(TIMER_INTERVAL_SECS),
+        remaining_secs: AtomicU64::new(TIMER_INTERVAL_SECS),
+        cycle_secs: AtomicU64::new(TIMER_INTERVAL_SECS),
+        snooze_used_secs: AtomicU64::new(0),
     });
 
     let timer_state = Arc::clone(&state);
@@ -118,6 +197,9 @@ pub fn run() {
             is_locked,
             set_timer_paused,
             get_timer_interval,
+            set_timer_interval,
+            get_countdown,
+            get_snooze_budget,
         ])
         .setup(move |app| {
             // In dev, pop open the WebView DevTools so frontend console.log()
@@ -171,31 +253,49 @@ pub fn run() {
             let state = timer_state;
 
             std::thread::spawn(move || {
-                let mut wait_secs = TIMER_INTERVAL_SECS;
+                // Poll once a second and count elapsed idle time toward the
+                // target. Polling (vs. one long sleep) lets an interval change
+                // from Settings take effect on the current countdown, and lets
+                // pause freeze it, without waiting out a stale duration.
+                let mut elapsed: u64 = 0;
 
                 loop {
-                    // Wait until the next break is due.
-                    std::thread::sleep(Duration::from_secs(wait_secs));
+                    std::thread::sleep(Duration::from_secs(1));
 
-                    // Fire the break, unless paused or already locked.
-                    if !state.timer_paused.load(Ordering::SeqCst)
-                        && !state.is_locked.load(Ordering::SeqCst)
-                    {
+                    // A break is on screen — wait it out, then start fresh.
+                    if state.is_locked.load(Ordering::SeqCst) {
+                        elapsed = 0;
+                        continue;
+                    }
+                    // Frozen while paused (tray toggle).
+                    if state.timer_paused.load(Ordering::SeqCst) {
+                        continue;
+                    }
+
+                    elapsed += 1;
+
+                    // A pending snooze shortens just this cycle; otherwise use
+                    // the live, user-configurable interval.
+                    let snooze = state.snooze_secs.load(Ordering::SeqCst);
+                    let target = if snooze > 0 {
+                        snooze
+                    } else {
+                        state.interval_secs.load(Ordering::SeqCst)
+                    };
+
+                    // Publish the countdown so the idle screen can mirror it.
+                    state.cycle_secs.store(target, Ordering::SeqCst);
+                    state.remaining_secs.store(target.saturating_sub(elapsed), Ordering::SeqCst);
+
+                    if elapsed >= target {
+                        state.snooze_secs.store(0, Ordering::SeqCst); // consume the snooze
+                        elapsed = 0;
                         state.is_locked.store(true, Ordering::SeqCst);
                         if let Some(window) = app_handle.get_webview_window("main") {
                             engage_lock(&window);
                         }
                         let _ = app_handle.emit("screen-locked", ());
                     }
-
-                    // Block here until the user gets out (stretch, snooze, or manual unlock).
-                    while state.is_locked.load(Ordering::SeqCst) {
-                        std::thread::sleep(Duration::from_millis(500));
-                    }
-
-                    // A snooze shortens the wait to the next break; otherwise full interval.
-                    let snoozed = state.snooze_secs.swap(0, Ordering::SeqCst);
-                    wait_secs = if snoozed > 0 { snoozed } else { TIMER_INTERVAL_SECS };
                 }
             });
 

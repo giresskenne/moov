@@ -54,7 +54,7 @@
           <div class="ob-cards">
             <div class="ob-card" style="--i: 0">
               <div class="ob-card-icon">⏰</div>
-              <h3>Every 30 minutes</h3>
+              <h3 id="ob-interval-line">Every 30 minutes</h3>
               <p>Moov takes over your screen so you can't "just finish this one thing."</p>
             </div>
             <div class="ob-card" style="--i: 1">
@@ -188,7 +188,83 @@
         <h1 class="app-title">Moov</h1>
         <p class="app-subtitle">Your back will thank you ✨</p>
         <button id="btn-test-lock" class="btn-subtle">Test stretch now</button>
-        <button id="btn-replay-onboarding" class="btn-link">Replay intro</button>
+        <div class="idle-links">
+          <button id="btn-settings" class="btn-link">Settings</button>
+          <button id="btn-replay-onboarding" class="btn-link">Replay intro</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== SETTINGS ===================== -->
+    <div id="settings-screen" class="screen">
+      <div class="settings-panel">
+        <div class="settings-head">
+          <h1 class="settings-title">Settings</h1>
+          <button id="settings-close" class="settings-x" aria-label="Close settings">✕</button>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">
+            <h3>Break interval</h3>
+            <p>How often Moov takes over your screen.</p>
+          </div>
+          <div class="setting-control interval-control">
+            <div id="set-interval-chips" class="seg" role="group" aria-label="Break interval presets"></div>
+            <div class="interval-custom">
+              <input
+                id="set-interval"
+                class="num-input"
+                type="number"
+                min="1"
+                step="1"
+                aria-label="Break interval in minutes"
+              />
+              <span class="unit">min</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">
+            <h3>Difficulty</h3>
+            <p>One tap sets the reps for every exercise below.</p>
+          </div>
+          <div id="set-difficulty" class="seg" role="group" aria-label="Difficulty"></div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">
+            <h3>Exercises</h3>
+            <p>Turn each on or off and fine-tune its reps.</p>
+          </div>
+          <div id="set-exercises" class="ex-list"></div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">
+            <h3>Snooze length</h3>
+            <p>How far "Snooze" pushes the next break.</p>
+          </div>
+          <div id="set-snooze" class="seg" role="group" aria-label="Snooze length"></div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">
+            <h3>Default stretch</h3>
+            <p>Pre-selected when a break starts.</p>
+          </div>
+          <div id="set-stretch" class="seg" role="group" aria-label="Default stretch"></div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">
+            <h3>First-run intro</h3>
+            <p>Walk through onboarding again.</p>
+          </div>
+          <div class="setting-control">
+            <button id="set-replay" class="ob-btn ghost">Replay intro</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -226,6 +302,17 @@
             />
             <span class="stretch-name">Lumbar Extension</span>
           </button>
+        </div>
+
+        <!-- Snooze escape hatch: choose how long, capped by remaining budget. -->
+        <div id="snooze-area" class="snooze-area">
+          <div id="snooze-options" class="snooze-options">
+            <span class="snooze-label">Can't right now? Snooze for</span>
+            <div id="snooze-chips" class="seg" role="group" aria-label="Snooze duration"></div>
+          </div>
+          <p id="snooze-blocked" class="snooze-blocked hidden">
+            You've snoozed enough for now — time to move. 💪
+          </p>
         </div>
       </section>
 
